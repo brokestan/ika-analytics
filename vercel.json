@@ -7,7 +7,7 @@
   ],
   "functions": {
     "app/api/index/route.ts": {
-      "maxDuration": 300
+      "maxDuration": 60
     }
   }
 }
