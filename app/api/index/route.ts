@@ -115,7 +115,7 @@ export async function GET(req: NextRequest) {
           last_active_at: e.timestampMs ? new Date(parseInt(e.timestampMs)).toISOString() : now,
         }));
         for (const b of chunk(wallets, BATCH_SIZE)) {
-          await withRetry(() => db.from('wallets').upsert(b, { onConflict: 'address' }).then(throwOnError), 'ika-lock-wallets');
+          await withRetry(() => db.from('wallets').upsert(b, { onConflict: 'address' }).then(r => { if (r.error) throw r.error; return r; }), 'ika-lock-wallets');
         }
         const rows = page.data.map((e: any) => ({
           wallet_address: e.account,
@@ -131,7 +131,7 @@ export async function GET(req: NextRequest) {
           is_active:      true,
         }));
         for (const b of chunk(rows, BATCH_SIZE)) {
-          await withRetry(() => db.from('locks').upsert(b, { onConflict: 'tx_digest', ignoreDuplicates: true }).then(throwOnError), 'ika-lock-upsert');
+          await withRetry(() => db.from('locks').upsert(b, { onConflict: 'tx_digest', ignoreDuplicates: true }).then(r => { if (r.error) throw r.error; return r; }), 'ika-lock-upsert');
         }
         return rows.length;
       }
@@ -150,7 +150,7 @@ export async function GET(req: NextRequest) {
           await withRetry(() => db.from('locks')
             .update({ is_active: false, unlocked_at: unlockedAt, drizzlets_earned: drizzlets, updated_at: now })
             .eq('wallet_address', e.account).eq('state_time_ts', e.state_time_ts)
-            .eq('asset_type', 'ika').eq('is_active', true).then(throwOnError), 'ika-unlock-update');
+            .eq('asset_type', 'ika').eq('is_active', true).then(r => { if (r.error) throw r.error; return r; }), 'ika-unlock-update');
           await withRetry(() => db.from('drizzlets').insert({
             wallet_address: e.account, source: 'unlock',
             amount: drizzlets, reference_id: e.txDigest, earned_at: unlockedAt,
@@ -172,7 +172,7 @@ export async function GET(req: NextRequest) {
           last_active_at: e.timestampMs ? new Date(parseInt(e.timestampMs)).toISOString() : now,
         }));
         for (const b of chunk(wallets, BATCH_SIZE)) {
-          await withRetry(() => db.from('wallets').upsert(b, { onConflict: 'address' }).then(throwOnError), 'isui-lock-wallets');
+          await withRetry(() => db.from('wallets').upsert(b, { onConflict: 'address' }).then(r => { if (r.error) throw r.error; return r; }), 'isui-lock-wallets');
         }
         const rows = page.data.map((e: any) => ({
           wallet_address: e.account,
@@ -188,7 +188,7 @@ export async function GET(req: NextRequest) {
           is_active:      true,
         }));
         for (const b of chunk(rows, BATCH_SIZE)) {
-          await withRetry(() => db.from('locks').upsert(b, { onConflict: 'tx_digest', ignoreDuplicates: true }).then(throwOnError), 'isui-lock-upsert');
+          await withRetry(() => db.from('locks').upsert(b, { onConflict: 'tx_digest', ignoreDuplicates: true }).then(r => { if (r.error) throw r.error; return r; }), 'isui-lock-upsert');
         }
         return rows.length;
       }
@@ -207,7 +207,7 @@ export async function GET(req: NextRequest) {
           await withRetry(() => db.from('locks')
             .update({ is_active: false, unlocked_at: unlockedAt, drizzlets_earned: drizzlets, updated_at: now })
             .eq('wallet_address', e.account).eq('state_time_ts', e.state_time_ts)
-            .eq('asset_type', 'isui').eq('is_active', true).then(throwOnError), 'isui-unlock-update');
+            .eq('asset_type', 'isui').eq('is_active', true).then(r => { if (r.error) throw r.error; return r; }), 'isui-unlock-update');
           await withRetry(() => db.from('drizzlets').insert({
             wallet_address: e.account, source: 'isui_lock',
             amount: drizzlets, reference_id: e.txDigest, earned_at: unlockedAt,
@@ -347,7 +347,7 @@ async function rebuildAggregates(db: ReturnType<typeof getDB>, now: string) {
     total_drizzlets: s.drizzlets, active_locks: s.locks, updated_at: now,
   }));
   for (const b of chunk(walletRows, BATCH_SIZE)) {
-    await withRetry(() => db.from('wallets').upsert(b, { onConflict: 'address' }).then(throwOnError), 'wallets-agg');
+    await withRetry(() => db.from('wallets').upsert(b, { onConflict: 'address' }).then(r => { if (r.error) throw r.error; return r; }), 'wallets-agg');
   }
 
   // Lock distribution (IKA only)
