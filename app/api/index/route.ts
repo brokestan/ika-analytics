@@ -52,7 +52,7 @@ function chunk<T>(arr: T[], size: number): T[][] {
   return out;
 }
 
-async function withRetry<T>(fn: () => Promise<T>, label: string): Promise<T | null> {
+async function withRetry<T>(fn: () => Promise<T> | PromiseLike<T>, label: string): Promise<T | null> {
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try { return await fn(); }
     catch (err) {
