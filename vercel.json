@@ -1,13 +1,13 @@
 {
-  "crons": [
-    {
-      "path": "/api/index",
-      "schedule": "0 0 * * *"
-    }
-  ],
   "functions": {
     "app/api/index/route.ts": {
       "maxDuration": 60
     }
-  }
+  },
+  "crons": [
+    {
+      "path": "/api/index",
+      "schedule": "*/5 * * * *"
+    }
+  ]
 }
