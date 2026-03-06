@@ -9,9 +9,9 @@ interface LockInput {
 export function buildLockDistribution(locks: LockInput[]): LockDistributionItem[] {
   const durations: LockDuration[] = [0, 1, 7, 30];
   const labels: Record<LockDuration, string> = {
-    0: 'Season Lock',
-    1: '1 Day Lock',
-    7: '7 Day Lock',
+    0:  'Season Lock',
+    1:  '1 Day Lock',
+    7:  '7 Day Lock',
     30: '30 Day Lock',
   };
   const total = locks.length || 1;
@@ -29,28 +29,32 @@ export function buildLockDistribution(locks: LockInput[]): LockDistributionItem[
 }
 
 export interface ForecastResult {
-  current: number;
-  day30: number;
-  day60: number;
+  current:    number;
+  day30:      number;
+  day60:      number;
   season_end: number;
 }
 
 export function forecastDrizzlets(
-  currentTotal: number,
-  totalIkaStaked: number,
+  currentTotal:    number,
+  totalIkaStaked:  number,
   totalISUIStaked: number,
-  avgIkaRate: number,
-  daysLeft: number
+  avgIkaRate:      number,
+  daysLeft:        number
 ): ForecastResult {
-  // Daily accrual from IKA + iSUI combined
   const dailyIka  = (totalIkaStaked  / 10) * avgIkaRate;
-  const dailyISUI = (totalISUIStaked / 10) * 5; // iSUI always season rate
+  const dailyISUI = (totalISUIStaked / 10) * 5;
   const daily     = dailyIka + dailyISUI;
-
   return {
     current:    Math.round(currentTotal),
     day30:      Math.round(currentTotal + daily * 30),
     day60:      Math.round(currentTotal + daily * 60),
     season_end: Math.round(currentTotal + daily * Math.max(daysLeft, 0)),
   };
+}
+
+export function formatNumber(value: number, decimals = 0): string {
+  if (value >= 1_000_000) return (value / 1_000_000).toFixed(1) + 'M';
+  if (value >= 1_000)     return (value / 1_000).toFixed(1) + 'K';
+  return value.toFixed(decimals);
 }
