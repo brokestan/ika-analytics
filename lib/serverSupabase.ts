@@ -127,24 +127,4 @@ export async function serverGetDrizzletDist() {
       .from('drizzlet_distribution_cache').select('*').eq('id', 'main').single();
     return data ?? { locked_ika_rewards: 0, isui_rewards: 0, unlocked_drizzlets: 0, riddle_rewards: 0 };
   } catch { return { locked_ika_rewards: 0, isui_rewards: 0, unlocked_drizzlets: 0, riddle_rewards: 0 }; }
-  }      total: pools.reduce((s: number, p: { amount: number }) => s + Number(p.amount), 0),
-      fetched_at: pools[0]?.fetched_at ?? null,
-    };
-  } catch { return { pool1: 0, pool2: 0, pool3: 0, total: 0, fetched_at: null }; }
-}
-
-export async function serverGetLockDist() {
-  try {
-    const { data } = await getAdminClient()
-      .from('lock_distribution_cache').select('*').order('duration');
-    return data ?? [];
-  } catch { return []; }
-}
-
-export async function serverGetDrizzletDist() {
-  try {
-    const { data } = await getAdminClient()
-      .from('drizzlet_distribution_cache').select('*').eq('id', 'main').single();
-    return data ?? { locked_ika_rewards: 0, isui_rewards: 0, unlocked_drizzlets: 0, riddle_rewards: 0 };
-  } catch { return { locked_ika_rewards: 0, isui_rewards: 0, unlocked_drizzlets: 0, riddle_rewards: 0 }; }
 }
