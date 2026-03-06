@@ -110,14 +110,14 @@ export async function GET(req: NextRequest) {
       db, now, 'lock_events',
       (cursor) => fetchLockStakeEvents(cursor),
       async (page, db, now) => {
-        const wallets = page.data.map(e => ({
+        const wallets = page.data.map((e: any) => ({
           address:        e.account,
           last_active_at: e.timestampMs ? new Date(parseInt(e.timestampMs)).toISOString() : now,
         }));
         for (const b of chunk(wallets, BATCH_SIZE)) {
           await withRetry(() => db.from('wallets').upsert(b, { onConflict: 'address' }).then(throwOnError), 'ika-lock-wallets');
         }
-        const rows = page.data.map(e => ({
+        const rows = page.data.map((e: any) => ({
           wallet_address: e.account,
           tx_digest:      e.txDigest,
           asset_type:     'ika',
@@ -167,14 +167,14 @@ export async function GET(req: NextRequest) {
       db, now, 'isui_lock_events',
       (cursor) => fetchISUILockEvents(cursor),
       async (page, db, now) => {
-        const wallets = page.data.map(e => ({
+        const wallets = page.data.map((e: any) => ({
           address:        e.account,
           last_active_at: e.timestampMs ? new Date(parseInt(e.timestampMs)).toISOString() : now,
         }));
         for (const b of chunk(wallets, BATCH_SIZE)) {
           await withRetry(() => db.from('wallets').upsert(b, { onConflict: 'address' }).then(throwOnError), 'isui-lock-wallets');
         }
-        const rows = page.data.map(e => ({
+        const rows = page.data.map((e: any) => ({
           wallet_address: e.account,
           tx_digest:      e.txDigest,
           asset_type:     'isui',
