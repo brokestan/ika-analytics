@@ -1,17 +1,56 @@
-export function formatNumber(n: number, decimals = 2): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(decimals)}M`;
-  if (n >= 1_000)     return `${(n / 1_000).toFixed(decimals)}K`;
-  return n.toFixed(decimals);
+import { LockDistributionItem, LockDuration } from './types';
+import { getDrizzletRate } from './sui-rpc';
+
+interface LockInput {
+  lock_duration: LockDuration;
+  ika_amount: number;
 }
 
-export function shortenAddress(addr: string): string {
-  if (!addr || addr.length < 16) return addr;
-  return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
+export function buildLockDistribution(locks: LockInput[]): LockDistributionItem[] {
+  const durations: LockDuration[] = [0, 1, 7, 30];
+  const labels: Record<LockDuration, string> = {
+    0: 'Season Lock',
+    1: '1 Day Lock',
+    7: '7 Day Lock',
+    30: '30 Day Lock',
+  };
+  const total = locks.length || 1;
+  return durations.map((d) => {
+    const group = locks.filter((l) => l.lock_duration === d);
+    return {
+      duration:   d,
+      label:      labels[d],
+      percentage: Math.round((group.length / total) * 100),
+      total_nfts: group.length,
+      total_ika:  group.reduce((s, l) => s + l.ika_amount, 0),
+      rate:       getDrizzletRate(d),
+    };
+  });
 }
 
-export function getDrizzletRate(duration: number): number {
-  if (duration === 1)  return 1;
-  if (duration === 7)  return 2;
-  if (duration === 30) return 3;
-  return 5;
+export interface ForecastResult {
+  current: number;
+  day30: number;
+  day60: number;
+  season_end: number;
+}
+
+export function forecastDrizzlets(
+  currentTotal: number,
+  totalIkaStaked: number,
+  totalISUIStaked: number,
+  avgIkaRate: number,
+  daysLeft: number
+): ForecastResult {
+  // Daily accrual from IKA + iSUI combined
+  const dailyIka  = (totalIkaStaked  / 10) * avgIkaRate;
+  const dailyISUI = (totalISUIStaked / 10) * 5; // iSUI always season rate
+  const daily     = dailyIka + dailyISUI;
+
+  return {
+    current:    Math.round(currentTotal),
+    day30:      Math.round(currentTotal + daily * 30),
+    day60:      Math.round(currentTotal + daily * 60),
+    season_end: Math.round(currentTotal + daily * Math.max(daysLeft, 0)),
+  };
 }
