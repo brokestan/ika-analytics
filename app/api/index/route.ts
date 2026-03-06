@@ -144,7 +144,7 @@ export async function GET(req: NextRequest) {
       (cursor) => fetchUnlockEvents(cursor),
       async (page, db, now) => {
         let count = 0;
-        for (const e of page.data) {
+        for (const e of page.data as any[]) {
           const unlockedAt = new Date(parseInt(e.unlock_time_ts)).toISOString();
           const drizzlets  = Number(e.drizzlets_earned);
           await withRetry(() => db.from('locks')
@@ -201,7 +201,7 @@ export async function GET(req: NextRequest) {
       (cursor) => fetchISUIUnlockEvents(cursor),
       async (page, db, now) => {
         let count = 0;
-        for (const e of page.data) {
+        for (const e of page.data as any[]) {
           const unlockedAt = new Date(parseInt(e.unlock_time_ts)).toISOString();
           const drizzlets  = Number(e.drizzlets_earned);
           await withRetry(() => db.from('locks')
