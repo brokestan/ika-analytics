@@ -1,3 +1,216 @@
+og.success      = true;
+
+    await writeRefreshLog(db, mode, 'success', log);
+    console.log(`[Indexer] Done — locks: ${lockCount}, unlocks: ${unlockCount}`);
+
+    return NextResponse.json({ success: true, ...log });
+
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.error('[Indexer] Fatal error:', errMsg);
+    log.error = errMsg;
+    await writeRefreshLog(db, mode, 'error', log);
+    return NextResponse.json({ success: false, error: errMsg }, { status: 500 });
+
+  } finally {
+    await getDB().from('indexer_state').update({
+      is_running:  false,
+      last_run_at: new Date().toISOString(),
+      updated_at:  new Date().toISOString(),
+    }).eq('id', 'lock_events');
+  }
+}
+
+// ─── Aggregate Builder ────────────────────────────────────────────────────────
+
+async function rebuildAggregates(db: ReturnType<typeof getDB>, now: string) {
+  const { data: activeLocks }   = await db.from('locks').select('wallet_address,lock_duration,ika_amount,locked_at').eq('is_active', true);
+  const { data: inactiveLocks } = await db.from('locks').select('id').eq('is_active', false);
+
+  let totalIka = 0;
+  let totalDrizzlets = 0;
+  const wmap: Record<string, { ika: number; drizzlets: number; locks: number }> = {};
+  const ts = Date.now();
+
+  for (const lock of activeLocks || []) {
+    const ika  = Number(lock.ika_amount);
+    const dur  = Number(lock.lock_duration) as LockDuration;
+    const rate = getDrizzletRate(dur);
+    const days = Math.floor((ts - new Date(lock.locked_at).getTime()) / 86400000);
+    const drz  = calcIkaDrizzlets(ika, days, rate);
+
+    totalIka        += ika;
+    totalDrizzlets  += drz;
+
+    if (!wmap[lock.wallet_address]) wmap[lock.wallet_address] = { ika: 0, drizzlets: 0, locks: 0 };
+    wmap[lock.wallet_address].ika       += ika;
+    wmap[lock.wallet_address].drizzlets += drz;
+    wmap[lock.wallet_address].locks     += 1;
+  }
+
+  const { data: histDrz } = await db.from('drizzlets').select('wallet_address,amount,source');
+  let isuiRewards = 0, unlockedDrizzlets = 0, riddleRewards = 0;
+
+  for (const d of histDrz || []) {
+    if (!wmap[d.wallet_address]) wmap[d.wallet_address] = { ika: 0, drizzlets: 0, locks: 0 };
+    wmap[d.wallet_address].drizzlets += Number(d.amount);
+    if (d.source === 'isui_lock') isuiRewards      += Number(d.amount);
+    if (d.source === 'unlock')    unlockedDrizzlets += Number(d.amount);
+    if (d.source === 'riddle')    riddleRewards     += Number(d.amount);
+  }
+
+  // Batch wallet updates
+  const walletUpdates = Object.entries(wmap).map(([addr, s]) => ({
+    address: addr, ika_locked: s.ika, total_drizzlets: s.drizzlets,
+    active_locks: s.locks, updated_at: now,
+  }));
+
+  for (const batch of chunk(walletUpdates, BATCH_SIZE)) {
+    await withRetry(
+      () => db.from('wallets').upsert(batch, { onConflict: 'address' }).then(r => { if (r.error) throw r.error; return r; }),
+      'wallets-aggregate-upsert'
+    );
+  }
+
+  // Lock distribution
+  const dist = buildLockDistribution(
+    (activeLocks || []).map(l => ({ lock_duration: Number(l.lock_duration) as LockDuration, ika_amount: Number(l.ika_amount) }))
+  );
+  for (const item of dist) {
+    await db.from('lock_distribution_cache').upsert({
+      duration: item.duration, label: item.label, percentage: item.percentage,
+      total_nfts: item.total_nfts, total_ika: item.total_ika, rate: item.rate, updated_at: now,
+    }, { onConflict: 'duration' });
+  }
+
+  // Drizzlet distribution
+  await db.from('drizzlet_distribution_cache').upsert({
+    id: 'main', locked_ika_rewards: totalDrizzlets, isui_rewards: isuiRewards,
+    unlocked_drizzlets: unlockedDrizzlets, riddle_rewards: riddleRewards, updated_at: now,
+  }, { onConflict: 'id' });
+
+  // Dashboard cache
+  const forecast = forecastDrizzlets(totalDrizzlets + unlockedDrizzlets, totalIka, 0, 3, 60);
+  await db.from('dashboard_cache').upsert({
+    id: 'main', total_ika_staked: totalIka, total_isui_staked: 0,
+    total_locked_nfts: activeLocks?.length || 0,
+    total_unlocked_nfts: inactiveLocks?.length || 0,
+    total_staking_nfts: (activeLocks?.length || 0) + (inactiveLocks?.length || 0),
+    unique_staking_wallets: Object.keys(wmap).length,
+    total_drizzlets_earned: forecast.current,
+    forecast_drizzlets_30d: forecast.day30,
+    forecast_drizzlets_60d: forecast.day60,
+    forecast_drizzlets_season: forecast.season_end,
+    last_indexed_at: now, updated_at: now,
+  }, { onConflict: 'id' });
+          }    const auth = req.headers.get('authorization') || '';
+    const qs   = req.nextUrl.searchParams.get('secret') || '';
+    const cron = req.headers.get('x-vercel-cron') === '1';
+    if (auth !== `Bearer ${secret}` && qs !== secret && !cron) {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+    }
+  }
+
+  const db = getDB();
+  const { data: st } = await db.from('indexer_state').select('is_running').eq('id', 'lock_events').single();
+  if (st?.is_running) return NextResponse.json({ message: 'Already running' }, { status: 409 });
+
+  await db.from('indexer_state').update({ is_running: true, updated_at: new Date().toISOString() }).eq('id', 'lock_events');
+
+  try {
+    let lockCount = 0;
+
+    const lockPage = await rpc<{
+      data: Array<{ id: { txDigest: string }; parsedJson: Record<string, unknown>; timestampMs: string }>
+    }>('suix_queryEvents', [
+      { MoveEventType: `${PKG}::ika_staking::LockStakeIka` }, null, 50, false,
+    ]);
+
+    for (const event of lockPage?.data ?? []) {
+      const wallet   = String(event.parsedJson.sender || '');
+      const ika      = Number(String(event.parsedJson.staked_ika_balance || '0')) / 1e9;
+      const dur      = parseInt(String(event.parsedJson.lock_duration || '0'));
+      const lockedAt = event.timestampMs ? new Date(parseInt(event.timestampMs)).toISOString() : new Date().toISOString();
+      if (!wallet) continue;
+      await db.from('wallets').upsert({ address: wallet, last_active_at: lockedAt }, { onConflict: 'address', ignoreDuplicates: false });
+      const { error: le } = await db.from('locks').upsert({
+        wallet_address: wallet, tx_digest: event.id.txDigest,
+        lock_duration: dur, ika_amount: ika, locked_at: lockedAt,
+        is_active: true, nft_id: String(event.parsedJson.nft_id || ''),
+      }, { onConflict: 'tx_digest', ignoreDuplicates: true });
+      if (!le) lockCount++;
+    }
+
+    const unlockPage = await rpc<{
+      data: Array<{ id: { txDigest: string }; parsedJson: Record<string, unknown>; timestampMs: string }>
+    }>('suix_queryEvents', [
+      { MoveEventType: `${PKG}::ika_staking::UnlockStakedIka` }, null, 50, false,
+    ]);
+
+    for (const event of unlockPage?.data ?? []) {
+      const wallet     = String(event.parsedJson.sender || '');
+      const drizzlets  = Number(String(event.parsedJson.drizzlets_earned || '0'));
+      const nftId      = String(event.parsedJson.nft_id || '');
+      const unlockedAt = event.timestampMs ? new Date(parseInt(event.timestampMs)).toISOString() : new Date().toISOString();
+      if (!wallet) continue;
+      await db.from('locks').update({ is_active: false, unlocked_at: unlockedAt, drizzlets_earned: drizzlets, updated_at: new Date().toISOString() }).eq('nft_id', nftId).eq('is_active', true);
+      await db.from('drizzlets').insert({ wallet_address: wallet, source: 'unlock', amount: drizzlets, reference_id: event.id.txDigest, earned_at: unlockedAt });
+    }
+
+    const { data: activeLocks }   = await db.from('locks').select('wallet_address,lock_duration,ika_amount,locked_at').eq('is_active', true);
+    const { data: inactiveLocks } = await db.from('locks').select('id').eq('is_active', false);
+    const now = Date.now();
+    let totalIka = 0;
+    let totalDrizzlets = 0;
+    const wmap: Record<string, { ika: number; drizzlets: number; locks: number }> = {};
+
+    for (const lock of activeLocks || []) {
+      const ika  = Number(lock.ika_amount);
+      const dur  = Number(lock.lock_duration);
+      const rate = getDrizzletRate(dur);
+      const days = Math.floor((now - new Date(lock.locked_at).getTime()) / 86400000);
+      const drz  = (ika / 10) * rate * days;
+      totalIka += ika;
+      totalDrizzlets += drz;
+      if (!wmap[lock.wallet_address]) wmap[lock.wallet_address] = { ika: 0, drizzlets: 0, locks: 0 };
+      wmap[lock.wallet_address].ika       += ika;
+      wmap[lock.wallet_address].drizzlets += drz;
+      wmap[lock.wallet_address].locks     += 1;
+    }
+
+    const { data: histDrz } = await db.from('drizzlets').select('wallet_address,amount');
+    for (const d of histDrz || []) {
+      if (!wmap[d.wallet_address]) wmap[d.wallet_address] = { ika: 0, drizzlets: 0, locks: 0 };
+      wmap[d.wallet_address].drizzlets += Number(d.amount);
+    }
+
+    for (const [addr, s] of Object.entries(wmap)) {
+      await db.from('wallets').upsert({ address: addr, ika_locked: s.ika, total_drizzlets: s.drizzlets, active_locks: s.locks, updated_at: new Date().toISOString() }, { onConflict: 'address' });
+    }
+
+    const dailyTotal = (totalIka / 10) * 3;
+    await db.from('dashboard_cache').upsert({
+      id: 'main', total_ika_staked: totalIka, total_isui_staked: 0,
+      total_locked_nfts: activeLocks?.length || 0,
+      total_unlocked_nfts: inactiveLocks?.length || 0,
+      total_staking_nfts: (activeLocks?.length || 0) + (inactiveLocks?.length || 0),
+      unique_staking_wallets: Object.keys(wmap).length,
+      total_drizzlets_earned: Math.round(totalDrizzlets),
+      forecast_drizzlets_30d: Math.round(totalDrizzlets + dailyTotal * 30),
+      forecast_drizzlets_60d: Math.round(totalDrizzlets + dailyTotal * 60),
+      forecast_drizzlets_season: Math.round(totalDrizzlets + dailyTotal * 60),
+      last_indexed_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'id' });
+
+    return NextResponse.json({ success: true, new_locks: lockCount, ran_at: new Date().toISOString() });
+  } catch (err) {
+    console.error('[Indexer]', err instanceof Error ? err.message : 'unknown');
+    return NextResponse.json({ success: false, error: String(err) }, { status: 500 });
+  } finally {
+    await getDB().from('indexer_state').update({ is_running: false, last_run_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', 'lock_events');
+  }
+}
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import {
@@ -334,111 +547,4 @@ async function rebuildAggregates(db: ReturnType<typeof getDB>, now: string) {
     forecast_drizzlets_season: forecast.season_end,
     last_indexed_at: now, updated_at: now,
   }, { onConflict: 'id' });
-          }    const auth = req.headers.get('authorization') || '';
-    const qs   = req.nextUrl.searchParams.get('secret') || '';
-    const cron = req.headers.get('x-vercel-cron') === '1';
-    if (auth !== `Bearer ${secret}` && qs !== secret && !cron) {
-      return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
-    }
   }
-
-  const db = getDB();
-  const { data: st } = await db.from('indexer_state').select('is_running').eq('id', 'lock_events').single();
-  if (st?.is_running) return NextResponse.json({ message: 'Already running' }, { status: 409 });
-
-  await db.from('indexer_state').update({ is_running: true, updated_at: new Date().toISOString() }).eq('id', 'lock_events');
-
-  try {
-    let lockCount = 0;
-
-    const lockPage = await rpc<{
-      data: Array<{ id: { txDigest: string }; parsedJson: Record<string, unknown>; timestampMs: string }>
-    }>('suix_queryEvents', [
-      { MoveEventType: `${PKG}::ika_staking::LockStakeIka` }, null, 50, false,
-    ]);
-
-    for (const event of lockPage?.data ?? []) {
-      const wallet   = String(event.parsedJson.sender || '');
-      const ika      = Number(String(event.parsedJson.staked_ika_balance || '0')) / 1e9;
-      const dur      = parseInt(String(event.parsedJson.lock_duration || '0'));
-      const lockedAt = event.timestampMs ? new Date(parseInt(event.timestampMs)).toISOString() : new Date().toISOString();
-      if (!wallet) continue;
-      await db.from('wallets').upsert({ address: wallet, last_active_at: lockedAt }, { onConflict: 'address', ignoreDuplicates: false });
-      const { error: le } = await db.from('locks').upsert({
-        wallet_address: wallet, tx_digest: event.id.txDigest,
-        lock_duration: dur, ika_amount: ika, locked_at: lockedAt,
-        is_active: true, nft_id: String(event.parsedJson.nft_id || ''),
-      }, { onConflict: 'tx_digest', ignoreDuplicates: true });
-      if (!le) lockCount++;
-    }
-
-    const unlockPage = await rpc<{
-      data: Array<{ id: { txDigest: string }; parsedJson: Record<string, unknown>; timestampMs: string }>
-    }>('suix_queryEvents', [
-      { MoveEventType: `${PKG}::ika_staking::UnlockStakedIka` }, null, 50, false,
-    ]);
-
-    for (const event of unlockPage?.data ?? []) {
-      const wallet     = String(event.parsedJson.sender || '');
-      const drizzlets  = Number(String(event.parsedJson.drizzlets_earned || '0'));
-      const nftId      = String(event.parsedJson.nft_id || '');
-      const unlockedAt = event.timestampMs ? new Date(parseInt(event.timestampMs)).toISOString() : new Date().toISOString();
-      if (!wallet) continue;
-      await db.from('locks').update({ is_active: false, unlocked_at: unlockedAt, drizzlets_earned: drizzlets, updated_at: new Date().toISOString() }).eq('nft_id', nftId).eq('is_active', true);
-      await db.from('drizzlets').insert({ wallet_address: wallet, source: 'unlock', amount: drizzlets, reference_id: event.id.txDigest, earned_at: unlockedAt });
-    }
-
-    const { data: activeLocks }   = await db.from('locks').select('wallet_address,lock_duration,ika_amount,locked_at').eq('is_active', true);
-    const { data: inactiveLocks } = await db.from('locks').select('id').eq('is_active', false);
-    const now = Date.now();
-    let totalIka = 0;
-    let totalDrizzlets = 0;
-    const wmap: Record<string, { ika: number; drizzlets: number; locks: number }> = {};
-
-    for (const lock of activeLocks || []) {
-      const ika  = Number(lock.ika_amount);
-      const dur  = Number(lock.lock_duration);
-      const rate = getDrizzletRate(dur);
-      const days = Math.floor((now - new Date(lock.locked_at).getTime()) / 86400000);
-      const drz  = (ika / 10) * rate * days;
-      totalIka += ika;
-      totalDrizzlets += drz;
-      if (!wmap[lock.wallet_address]) wmap[lock.wallet_address] = { ika: 0, drizzlets: 0, locks: 0 };
-      wmap[lock.wallet_address].ika       += ika;
-      wmap[lock.wallet_address].drizzlets += drz;
-      wmap[lock.wallet_address].locks     += 1;
-    }
-
-    const { data: histDrz } = await db.from('drizzlets').select('wallet_address,amount');
-    for (const d of histDrz || []) {
-      if (!wmap[d.wallet_address]) wmap[d.wallet_address] = { ika: 0, drizzlets: 0, locks: 0 };
-      wmap[d.wallet_address].drizzlets += Number(d.amount);
-    }
-
-    for (const [addr, s] of Object.entries(wmap)) {
-      await db.from('wallets').upsert({ address: addr, ika_locked: s.ika, total_drizzlets: s.drizzlets, active_locks: s.locks, updated_at: new Date().toISOString() }, { onConflict: 'address' });
-    }
-
-    const dailyTotal = (totalIka / 10) * 3;
-    await db.from('dashboard_cache').upsert({
-      id: 'main', total_ika_staked: totalIka, total_isui_staked: 0,
-      total_locked_nfts: activeLocks?.length || 0,
-      total_unlocked_nfts: inactiveLocks?.length || 0,
-      total_staking_nfts: (activeLocks?.length || 0) + (inactiveLocks?.length || 0),
-      unique_staking_wallets: Object.keys(wmap).length,
-      total_drizzlets_earned: Math.round(totalDrizzlets),
-      forecast_drizzlets_30d: Math.round(totalDrizzlets + dailyTotal * 30),
-      forecast_drizzlets_60d: Math.round(totalDrizzlets + dailyTotal * 60),
-      forecast_drizzlets_season: Math.round(totalDrizzlets + dailyTotal * 60),
-      last_indexed_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    }, { onConflict: 'id' });
-
-    return NextResponse.json({ success: true, new_locks: lockCount, ran_at: new Date().toISOString() });
-  } catch (err) {
-    console.error('[Indexer]', err instanceof Error ? err.message : 'unknown');
-    return NextResponse.json({ success: false, error: String(err) }, { status: 500 });
-  } finally {
-    await getDB().from('indexer_state').update({ is_running: false, last_run_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', 'lock_events');
-  }
-}
