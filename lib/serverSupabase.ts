@@ -12,10 +12,9 @@ export function getAdminClient(): SupabaseClient {
 // ─── Checkpoint Helpers ───────────────────────────────────────────────────────
 
 export interface Checkpoint {
-  id: string;
+  event_type: string;
   last_tx_digest: string | null;
   last_event_seq: string | null;
-  last_run_at: string | null;
   updated_at: string;
 }
 
@@ -37,20 +36,18 @@ export async function saveCheckpoint(
   eventSeq: string
 ): Promise<void> {
   await db.from('indexer_checkpoints').upsert({
-    id,
+    event_type: id,
     last_tx_digest: txDigest,
     last_event_seq: eventSeq,
-    last_run_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   }, { onConflict: 'event_type' });
 }
 
 export async function clearCheckpoint(db: SupabaseClient, id: string): Promise<void> {
   await db.from('indexer_checkpoints').upsert({
-    id,
+    event_type: id,
     last_tx_digest: null,
     last_event_seq: null,
-    last_run_at: null,
     updated_at: new Date().toISOString(),
   }, { onConflict: 'event_type' });
 }
@@ -127,4 +124,4 @@ export async function serverGetDrizzletDist() {
       .from('drizzlet_distribution_cache').select('*').eq('id', 'main').single();
     return data ?? { locked_ika_rewards: 0, isui_rewards: 0, unlocked_drizzlets: 0, riddle_rewards: 0 };
   } catch { return { locked_ika_rewards: 0, isui_rewards: 0, unlocked_drizzlets: 0, riddle_rewards: 0 }; }
-}
+                                      }
