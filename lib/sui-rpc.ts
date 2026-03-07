@@ -217,7 +217,7 @@ export async function fetchISUILockEvents(
         txDigest:      e.id.txDigest,
         timestampMs:   e.timestampMs,
         account:       e.parsedJson.pos0.account,
-        isui_balance:  e.parsedJson.pos0.isui_balance,
+        isui_balance:  e.parsedJson.pos0.i_sui_balance,
         state_time_ts: e.parsedJson.pos0.state_time_ts,
       })),
       nextCursor:  result.nextCursor,
@@ -241,7 +241,7 @@ export async function fetchISUIUnlockEvents(
         txDigest:         e.id.txDigest,
         timestampMs:      e.timestampMs,
         account:          e.parsedJson.pos0.account,
-        isui_balance:     e.parsedJson.pos0.isui_balance,
+        isui_balance:     e.parsedJson.pos0.i_sui_balance,
         drizzlets_earned: e.parsedJson.pos0.drizzlets_earned,
         state_time_ts:    e.parsedJson.pos0.state_time_ts,
         unlock_time_ts:   e.parsedJson.pos0.unlock_time_ts,
@@ -269,7 +269,7 @@ export async function fetchRiddlePool(): Promise<RiddlePoolFields | null> {
       RIDDLE_POOL_OBJECT,
       { showContent: true },
     ]);
-    const fields = obj?.content?.fields as Record<string, unknown> | undefined;
+    const fields = (obj as any)?.data?.content?.fields as Record<string, unknown> | undefined;
     if (!fields) return null;
 
     // Confirmed field names from chain object data (riddle_one_pool etc, raw drizzlets — NO 1e9 division)
