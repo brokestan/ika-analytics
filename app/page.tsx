@@ -1,15 +1,4 @@
-import {
-  Coins,
-  Droplets,
-  Lock,
-  Unlock,
-  LayoutGrid,
-  Users,
-  Sparkles,
-  TrendingUp,
-  Clock,
-  AlertCircle,
-} from 'lucide-react';
+import { Clock, AlertCircle, Droplets } from 'lucide-react';
 import MetricCard from '@/components/MetricCard';
 import DrizzletPieChart from '@/components/DrizzletPieChart';
 import LockDistributionChart from '@/components/LockDistributionChart';
@@ -48,10 +37,7 @@ export default async function DashboardPage() {
               <span className="inline-flex items-center gap-1 text-xs text-ika-muted">
                 <Clock className="w-3 h-3" />
                 {new Date(m.last_indexed_at).toLocaleDateString('en-US', {
-                  month: 'short',
-                  day: 'numeric',
-                  hour: '2-digit',
-                  minute: '2-digit',
+                  month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
                 })}
               </span>
             )}
@@ -63,21 +49,19 @@ export default async function DashboardPage() {
       {!hasIndexed && (
         <div className="flex items-center gap-3 p-4 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-sm">
           <AlertCircle className="w-5 h-5 flex-shrink-0" />
-          <span>
-            No data indexed yet. Click <strong>Refresh</strong> above or run the indexer URL.
-          </span>
+          <span>No data indexed yet. Click <strong>Refresh</strong> above or run the indexer URL.</span>
         </div>
       )}
 
       <div className="grid-dashboard">
-        <MetricCard title="Total IKA Staked"       value={m?.total_ika_staked ?? 0}          icon={Coins}      iconColor="text-ika-pink"    accent  suffix=" IKA"  animationDelay={0}   />
-        <MetricCard title="Total iSUI Staked"      value={m?.total_isui_staked ?? 0}         icon={Droplets}   iconColor="text-violet-400"          suffix=" iSUI" animationDelay={50}  />
-        <MetricCard title="Locked NFTs"            value={m?.total_locked_nfts ?? 0}         icon={Lock}       iconColor="text-amber-400"           decimals={0}   animationDelay={100} />
-        <MetricCard title="Unlocked NFTs"          value={m?.total_unlocked_nfts ?? 0}       icon={Unlock}     iconColor="text-emerald-400"         decimals={0}   animationDelay={150} />
-        <MetricCard title="Total Staking NFTs"     value={m?.total_staking_nfts ?? 0}        icon={LayoutGrid} iconColor="text-cyan-400"            decimals={0}   animationDelay={200} />
-        <MetricCard title="Unique Wallets"         value={m?.unique_staking_wallets ?? 0}    icon={Users}      iconColor="text-blue-400"            decimals={0}   animationDelay={250} />
-        <MetricCard title="Total Drizzlets"        value={m?.total_drizzlets_earned ?? 0}    icon={Sparkles}   iconColor="text-ika-pink"    accent                 animationDelay={300} />
-        <MetricCard title="Season Forecast"        value={m?.forecast_drizzlets_season ?? 0} icon={TrendingUp} iconColor="text-emerald-400"         subtitle="Projected total" animationDelay={350} />
+        <MetricCard title="Total IKA Staked"   value={m?.total_ika_staked ?? 0}          iconName="Coins"      iconColor="text-ika-pink"    accent  suffix=" IKA"  animationDelay={0}   />
+        <MetricCard title="Total iSUI Staked"  value={m?.total_isui_staked ?? 0}         iconName="Droplets"   iconColor="text-violet-400"          suffix=" iSUI" animationDelay={50}  />
+        <MetricCard title="Locked NFTs"        value={m?.total_locked_nfts ?? 0}         iconName="Lock"       iconColor="text-amber-400"           decimals={0}   animationDelay={100} />
+        <MetricCard title="Unlocked NFTs"      value={m?.total_unlocked_nfts ?? 0}       iconName="Unlock"     iconColor="text-emerald-400"         decimals={0}   animationDelay={150} />
+        <MetricCard title="Total Staking NFTs" value={m?.total_staking_nfts ?? 0}        iconName="LayoutGrid" iconColor="text-cyan-400"            decimals={0}   animationDelay={200} />
+        <MetricCard title="Unique Wallets"     value={m?.unique_staking_wallets ?? 0}    iconName="Users"      iconColor="text-blue-400"            decimals={0}   animationDelay={250} />
+        <MetricCard title="Total Drizzlets"    value={m?.total_drizzlets_earned ?? 0}    iconName="Sparkles"   iconColor="text-ika-pink"    accent                 animationDelay={300} />
+        <MetricCard title="Season Forecast"    value={m?.forecast_drizzlets_season ?? 0} iconName="TrendingUp" iconColor="text-emerald-400"         subtitle="Projected total" animationDelay={350} />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-5">
@@ -131,4 +115,4 @@ export default async function DashboardPage() {
       </div>
     </div>
   );
-}
+                }
