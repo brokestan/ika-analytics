@@ -54,7 +54,7 @@ export default function DrizzletPieChart({ data, loading }: { data: DrizzletDist
     .filter((d) => d.value > 0);
 
   const total = chartData.reduce((s, d) => s + d.value, 0);
-  if (total === 0) chartData.push({ name: 'No data yet', value: 1, color: '#2A1F3D' });
+  if (total === 0) chartData.push({ name: 'No data yet' as any, value: 1, color: '#2A1F3D' });
 
   return (
     <div className="card p-5 animate-slide-up" style={{ animationDelay: '100ms' }}>
