@@ -22,9 +22,9 @@ export interface Checkpoint {
 export async function getCheckpoint(db: SupabaseClient, id: string): Promise<Checkpoint | null> {
   try {
     const { data } = await db
-      .from('checkpoints')
+      .from('indexer_checkpoints')
       .select('*')
-      .eq('id', id)
+      .eq('event_type', id)
       .single();
     return data as Checkpoint | null;
   } catch { return null; }
@@ -36,23 +36,23 @@ export async function saveCheckpoint(
   txDigest: string,
   eventSeq: string
 ): Promise<void> {
-  await db.from('checkpoints').upsert({
+  await db.from('indexer_checkpoints').upsert({
     id,
     last_tx_digest: txDigest,
     last_event_seq: eventSeq,
     last_run_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
-  }, { onConflict: 'id' });
+  }, { onConflict: 'event_type' });
 }
 
 export async function clearCheckpoint(db: SupabaseClient, id: string): Promise<void> {
-  await db.from('checkpoints').upsert({
+  await db.from('indexer_checkpoints').upsert({
     id,
     last_tx_digest: null,
     last_event_seq: null,
     last_run_at: null,
     updated_at: new Date().toISOString(),
-  }, { onConflict: 'id' });
+  }, { onConflict: 'event_type' });
 }
 
 // ─── Refresh Log ──────────────────────────────────────────────────────────────
