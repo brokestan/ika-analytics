@@ -158,8 +158,7 @@ export async function fetchLockStakeEvents(
 ): Promise<EventPage<LockEventFlat>> {
   try {
     const result = await fetchEventPage<StakedIkaLockedFields>(EVENT_IKA_LOCK, cursor);
-    const txDigests = result.data.map((e) => e.id.txDigest);
-    const durations = await fetchLockDurations(txDigests);
+    
 
     return {
       data: result.data.map((e) => ({
@@ -168,7 +167,7 @@ export async function fetchLockStakeEvents(
         account:            e.parsedJson.pos0.account,
         staked_ika_balance: e.parsedJson.pos0.staked_ika_balance,
         state_time_ts:      e.parsedJson.pos0.state_time_ts,
-        lock_duration:      durations[e.id.txDigest] ?? 0,
+        lock_duration: 0,
       })),
       nextCursor:  result.nextCursor,
       hasNextPage: result.hasNextPage,
