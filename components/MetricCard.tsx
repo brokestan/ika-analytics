@@ -1,13 +1,20 @@
 'use client';
-import { type LucideIcon } from 'lucide-react';
+import {
+  Coins, Droplets, Lock, Unlock, LayoutGrid,
+  Users, Sparkles, TrendingUp, type LucideIcon,
+} from 'lucide-react';
 import clsx from 'clsx';
 import { formatNumber } from '@/lib/calculations';
+
+const ICON_MAP: Record<string, LucideIcon> = {
+  Coins, Droplets, Lock, Unlock, LayoutGrid, Users, Sparkles, TrendingUp,
+};
 
 interface MetricCardProps {
   title: string;
   value: number | string;
   subtitle?: string;
-  icon: LucideIcon;
+  iconName: string;
   iconColor?: string;
   accent?: boolean;
   prefix?: string;
@@ -18,11 +25,13 @@ interface MetricCardProps {
 }
 
 export default function MetricCard({
-  title, value, subtitle, icon: Icon,
+  title, value, subtitle, iconName,
   iconColor = 'text-ika-pink', accent = false,
   prefix = '', suffix = '', loading = false,
   decimals = 2, animationDelay = 0,
 }: MetricCardProps) {
+  const Icon = ICON_MAP[iconName] ?? Coins;
+
   const displayValue =
     typeof value === 'number'
       ? `${prefix}${formatNumber(value, decimals)}${suffix}`
@@ -61,4 +70,4 @@ export default function MetricCard({
       {accent && <div className="absolute bottom-0 left-4 right-4 h-[2px] bg-ika-gradient rounded-full" />}
     </div>
   );
-}
+    }
