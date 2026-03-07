@@ -21,8 +21,8 @@ const RIDDLE_POOL_OBJECT =
 // Event type strings — exact names confirmed from package tx list
 const EVENT_IKA_LOCK    = `${PKG}::event_wrapper::Event<${PKG}::tasks::StakedIkaLocked>`;
 const EVENT_IKA_UNLOCK  = `${PKG}::event_wrapper::Event<${PKG}::tasks::StakedIkaUnlocked>`;
-const EVENT_ISUI_LOCK   = `${PKG}::event_wrapper::Event<${PKG}::tasks::lock_i_sui>`;
-const EVENT_ISUI_UNLOCK = `${PKG}::event_wrapper::Event<${PKG}::tasks::unlock_i_sui>`;
+const EVENT_ISUI_LOCK   = `${PKG}::event_wrapper::Event<${PKG}::tasks::ISuiLocked>`;
+const EVENT_ISUI_UNLOCK = `${PKG}::event_wrapper::Event<${PKG}::tasks::ISuiUnlocked>`;
 
 // ─── RPC Base ─────────────────────────────────────────────────────────────────
 
