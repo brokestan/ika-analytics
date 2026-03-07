@@ -403,16 +403,6 @@ async function rebuildAggregates(db: ReturnType<typeof getDB>, now: string) {
     total_drizzlets: s.drizzlets, active_locks: s.locks, updated_at: now,
   }));
 
-  const BATCH_SIZE = 25;
-  function chunk<T>(arr: T[], size: number): T[][] {
-    const out: T[][] = [];
-    for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
-    return out;
-  }
-  async function withRetry<T>(fn: () => Promise<T>, label: string): Promise<T | null> {
-    try { return await fn(); } catch { return null; }
-  }
-
   for (const b of chunk(walletRows, BATCH_SIZE)) {
     await withRetry(() => db.from('wallets').upsert(b, { onConflict: 'address' }).then(r => { if (r.error) throw r.error; return r; }), 'wallets-agg');
   }
