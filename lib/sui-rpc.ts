@@ -12,7 +12,7 @@ const RPC_URL = process.env.SUI_RPC_URL || 'https://fullnode.mainnet.sui.io:443'
 // Hardcoded — confirmed from your transaction data
 const PKG =
   process.env.IKA_PACKAGE_ID ||
-  '0x765307507478ca630ddc0c44ab3bb9e83c3aa98aea2777a4f0aea0ade4a853f8';
+  '0x7de6bc92a5b7e07d09faecbff30f4c0ef751b97cafbd29fef8898a822a325d27';
 
 const RIDDLE_POOL_OBJECT =
   process.env.RIDDLE_POOL_OBJECT_ID ||
