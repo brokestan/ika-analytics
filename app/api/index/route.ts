@@ -25,6 +25,9 @@ const BATCH_SIZE      = 25;
 const RATE_LIMIT_WAIT = 1500;
 const MAX_RETRIES     = 3;
 
+// Time budget: stop looping pages at 52s to leave room for aggregates + cleanup
+const TIME_BUDGET_MS  = 52_000;
+
 function getDB() {
   return createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -69,7 +72,6 @@ async function withRetry<T>(fn: () => Promise<T> | PromiseLike<T>, label: string
 }
 
 // ─── RPC connectivity test ────────────────────────────────────────────────────
-// Runs before anything else — if this fails we return immediately with the real error
 
 async function testRpcConnectivity(): Promise<{ ok: boolean; error?: string }> {
   try {
@@ -99,12 +101,13 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
 
-  const mode = req.nextUrl.searchParams.get('mode') === 'full' ? 'full' : 'checkpoint';
-  const db   = getDB();
-  const now  = new Date().toISOString();
+  const mode     = req.nextUrl.searchParams.get('mode') === 'full' ? 'full' : 'checkpoint';
+  const db       = getDB();
+  const now      = new Date().toISOString();
+  const startMs  = Date.now();
   const log: Record<string, unknown> = { mode, started_at: now };
 
-  // ── RPC connectivity check — fail fast with real error ─────────────────────
+  // ── RPC connectivity check ─────────────────────────────────────────────────
   const rpcCheck = await testRpcConnectivity();
   if (!rpcCheck.ok) {
     console.error('[Indexer] RPC connectivity failed:', rpcCheck.error);
@@ -138,8 +141,8 @@ export async function GET(req: NextRequest) {
     }
 
     // ── 1. IKA Locks ─────────────────────────────────────────────────────────
-    const ikaLockResult = await processOnePage(
-      db, now, 'lock_events',
+    const ikaLockResult = await processStream(
+      db, now, startMs, 'lock_events',
       (cursor) => fetchLockStakeEvents(cursor),
       async (page, db, now) => {
         const wallets = page.data.map((e: any) => ({
@@ -171,8 +174,8 @@ export async function GET(req: NextRequest) {
     log.ika_locks = ikaLockResult;
 
     // ── 2. IKA Unlocks ────────────────────────────────────────────────────────
-    const ikaUnlockResult = await processOnePage(
-      db, now, 'unlock_events',
+    const ikaUnlockResult = await processStream(
+      db, now, startMs, 'unlock_events',
       (cursor) => fetchUnlockEvents(cursor),
       async (page, db, now) => {
         let count = 0;
@@ -195,8 +198,8 @@ export async function GET(req: NextRequest) {
     log.ika_unlocks = ikaUnlockResult;
 
     // ── 3. iSUI Locks ─────────────────────────────────────────────────────────
-    const isuiLockResult = await processOnePage(
-      db, now, 'isui_lock_events',
+    const isuiLockResult = await processStream(
+      db, now, startMs, 'isui_lock_events',
       (cursor) => fetchISUILockEvents(cursor),
       async (page, db, now) => {
         const wallets = page.data.map((e: any) => ({
@@ -228,8 +231,8 @@ export async function GET(req: NextRequest) {
     log.isui_locks = isuiLockResult;
 
     // ── 4. iSUI Unlocks ───────────────────────────────────────────────────────
-    const isuiUnlockResult = await processOnePage(
-      db, now, 'isui_unlock_events',
+    const isuiUnlockResult = await processStream(
+      db, now, startMs, 'isui_unlock_events',
       (cursor) => fetchISUIUnlockEvents(cursor),
       async (page, db, now) => {
         let count = 0;
@@ -267,14 +270,15 @@ export async function GET(req: NextRequest) {
     await rebuildAggregates(db, now);
 
     const hasMore =
-      (ikaLockResult    as PageResult).hasMore ||
-      (ikaUnlockResult  as PageResult).hasMore ||
-      (isuiLockResult   as PageResult).hasMore ||
-      (isuiUnlockResult as PageResult).hasMore;
+      (ikaLockResult    as StreamResult).hasMore ||
+      (ikaUnlockResult  as StreamResult).hasMore ||
+      (isuiLockResult   as StreamResult).hasMore ||
+      (isuiUnlockResult as StreamResult).hasMore;
 
-    log.has_more     = hasMore;
-    log.completed_at = new Date().toISOString();
-    log.success      = true;
+    log.has_more      = hasMore;
+    log.elapsed_ms    = Date.now() - startMs;
+    log.completed_at  = new Date().toISOString();
+    log.success       = true;
 
     await writeRefreshLog(db, mode, 'success', log);
     console.log('[Indexer] Done:', JSON.stringify(log));
@@ -294,39 +298,58 @@ export async function GET(req: NextRequest) {
   }
 }
 
-// ─── processOnePage ───────────────────────────────────────────────────────────
+// ─── processStream — loops pages until time budget or no more pages ───────────
 
-type PageResult = { count: number; hasMore: boolean; error?: string };
-type AnyPage    = { data: unknown[]; nextCursor: { txDigest: string; eventSeq: string } | null; hasNextPage: boolean };
+type StreamResult = { count: number; pages: number; hasMore: boolean; error?: string };
+type AnyPage      = { data: unknown[]; nextCursor: { txDigest: string; eventSeq: string } | null; hasNextPage: boolean };
 
-async function processOnePage(
+async function processStream(
   db: ReturnType<typeof getDB>,
   now: string,
+  startMs: number,
   streamKey: string,
   fetcher: (cursor: { txDigest: string; eventSeq: string } | null) => Promise<AnyPage>,
   writer:  (page: AnyPage, db: ReturnType<typeof getDB>, now: string) => Promise<number>
-): Promise<PageResult> {
+): Promise<StreamResult> {
+  let totalCount = 0;
+  let totalPages = 0;
+
   try {
     const cp = await getCheckpoint(db, streamKey);
-    const cursor = cp?.last_tx_digest
+    let cursor = cp?.last_tx_digest
       ? { txDigest: cp.last_tx_digest, eventSeq: cp.last_event_seq || '0' }
       : null;
 
-    const page = await fetcher(cursor);
-    if (page.data.length === 0) return { count: 0, hasMore: false };
+    while (true) {
+      // Stop if we're approaching the time limit
+      if (Date.now() - startMs > TIME_BUDGET_MS) {
+        console.log(`[${streamKey}] Time budget reached after ${totalPages} pages`);
+        return { count: totalCount, pages: totalPages, hasMore: true };
+      }
 
-    const count = await writer(page, db, now);
+      const page = await fetcher(cursor);
 
-    if (page.nextCursor) {
-      await saveCheckpoint(db, streamKey, page.nextCursor.txDigest, page.nextCursor.eventSeq);
+      if (page.data.length === 0) {
+        return { count: totalCount, pages: totalPages, hasMore: false };
+      }
+
+      const count = await writer(page, db, now);
+      totalCount += count;
+      totalPages += 1;
+
+      if (page.nextCursor) {
+        await saveCheckpoint(db, streamKey, page.nextCursor.txDigest, page.nextCursor.eventSeq);
+        cursor = page.nextCursor;
+      }
+
+      if (!page.hasNextPage) {
+        return { count: totalCount, pages: totalPages, hasMore: false };
+      }
     }
-
-    return { count, hasMore: page.hasNextPage };
   } catch (err) {
-    // Surfaces the real error in the response JSON instead of silently returning 0
     const msg = err instanceof Error ? err.message : String(err);
-    console.error(`[processOnePage:${streamKey}] ERROR:`, msg);
-    return { count: 0, hasMore: false, error: msg };
+    console.error(`[processStream:${streamKey}] ERROR:`, msg);
+    return { count: totalCount, pages: totalPages, hasMore: false, error: msg };
   }
 }
 
@@ -375,16 +398,25 @@ async function rebuildAggregates(db: ReturnType<typeof getDB>, now: string) {
     if (d.source === 'riddle')    riddleDrz   += Number(d.amount);
   }
 
-  // Wallet bulk update
   const walletRows = Object.entries(wmap).map(([addr, s]) => ({
     address: addr, ika_locked: s.ika, isui_locked: s.isui,
     total_drizzlets: s.drizzlets, active_locks: s.locks, updated_at: now,
   }));
+
+  const BATCH_SIZE = 25;
+  function chunk<T>(arr: T[], size: number): T[][] {
+    const out: T[][] = [];
+    for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+    return out;
+  }
+  async function withRetry<T>(fn: () => Promise<T>, label: string): Promise<T | null> {
+    try { return await fn(); } catch { return null; }
+  }
+
   for (const b of chunk(walletRows, BATCH_SIZE)) {
     await withRetry(() => db.from('wallets').upsert(b, { onConflict: 'address' }).then(r => { if (r.error) throw r.error; return r; }), 'wallets-agg');
   }
 
-  // Lock distribution (IKA only)
   const dist = buildLockDistribution(
     (activeLocks || []).filter(l => l.asset_type === 'ika').map(l => ({
       lock_duration: Number(l.lock_duration) as LockDuration,
@@ -398,13 +430,11 @@ async function rebuildAggregates(db: ReturnType<typeof getDB>, now: string) {
     );
   }
 
-  // Drizzlet distribution cache
   await db.from('drizzlet_distribution_cache').upsert(
     { id: 'main', locked_ika_rewards: totalActiveDrz, isui_rewards: isuiDrz, unlocked_drizzlets: unlockedDrz, riddle_rewards: riddleDrz, updated_at: now },
     { onConflict: 'id' }
   );
 
-  // Dashboard cache
   const totalDrizzlets = totalActiveDrz + unlockedDrz + isuiDrz + riddleDrz;
   const forecast = forecastDrizzlets(totalDrizzlets, totalIka, totalISUI, 3, 60);
 
@@ -425,4 +455,4 @@ async function rebuildAggregates(db: ReturnType<typeof getDB>, now: string) {
   );
 
   console.log(`[Agg] IKA:${totalIka.toFixed(0)} iSUI:${totalISUI.toFixed(0)} Drz:${totalDrizzlets.toLocaleString()} Wallets:${Object.keys(wmap).length}`);
-                                           }
+    }
