@@ -68,9 +68,28 @@ async function withRetry<T>(fn: () => Promise<T> | PromiseLike<T>, label: string
   return null;
 }
 
-function throwOnError(r: { error: unknown }) {
-  if (r.error) throw r.error;
-  return r;
+// ─── RPC connectivity test ────────────────────────────────────────────────────
+// Runs before anything else — if this fails we return immediately with the real error
+
+async function testRpcConnectivity(): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const rpcUrl = process.env.SUI_RPC_URL || 'https://fullnode.mainnet.sui.io:443';
+    const res = await fetch(rpcUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0', id: 1,
+        method: 'sui_getLatestCheckpointSequenceNumber',
+        params: [],
+      }),
+    });
+    if (!res.ok) return { ok: false, error: `HTTP ${res.status} from RPC` };
+    const json = await res.json() as { result?: unknown; error?: { message: string } };
+    if (json.error) return { ok: false, error: `RPC error: ${json.error.message}` };
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: `RPC unreachable: ${String(err)}` };
+  }
 }
 
 // ─── Main handler ─────────────────────────────────────────────────────────────
@@ -84,6 +103,19 @@ export async function GET(req: NextRequest) {
   const db   = getDB();
   const now  = new Date().toISOString();
   const log: Record<string, unknown> = { mode, started_at: now };
+
+  // ── RPC connectivity check — fail fast with real error ─────────────────────
+  const rpcCheck = await testRpcConnectivity();
+  if (!rpcCheck.ok) {
+    console.error('[Indexer] RPC connectivity failed:', rpcCheck.error);
+    return NextResponse.json({
+      success: false,
+      error: rpcCheck.error,
+      rpc_url: process.env.SUI_RPC_URL || 'https://fullnode.mainnet.sui.io:443',
+      hint: 'RPC is unreachable from Vercel. Check SUI_RPC_URL env var.',
+    }, { status: 502 });
+  }
+  log.rpc_ok = true;
 
   // Concurrency guard
   const { data: st } = await db
@@ -264,7 +296,7 @@ export async function GET(req: NextRequest) {
 
 // ─── processOnePage ───────────────────────────────────────────────────────────
 
-type PageResult = { count: number; hasMore: boolean };
+type PageResult = { count: number; hasMore: boolean; error?: string };
 type AnyPage    = { data: unknown[]; nextCursor: { txDigest: string; eventSeq: string } | null; hasNextPage: boolean };
 
 async function processOnePage(
@@ -291,8 +323,10 @@ async function processOnePage(
 
     return { count, hasMore: page.hasNextPage };
   } catch (err) {
-    console.error(`[processOnePage:${streamKey}]`, err);
-    return { count: 0, hasMore: false };
+    // Surfaces the real error in the response JSON instead of silently returning 0
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[processOnePage:${streamKey}] ERROR:`, msg);
+    return { count: 0, hasMore: false, error: msg };
   }
 }
 
@@ -391,4 +425,4 @@ async function rebuildAggregates(db: ReturnType<typeof getDB>, now: string) {
   );
 
   console.log(`[Agg] IKA:${totalIka.toFixed(0)} iSUI:${totalISUI.toFixed(0)} Drz:${totalDrizzlets.toLocaleString()} Wallets:${Object.keys(wmap).length}`);
-}
+                                           }
