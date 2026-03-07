@@ -26,7 +26,7 @@ const RATE_LIMIT_WAIT = 1500;
 const MAX_RETRIES     = 3;
 
 // Time budget: stop looping pages at 52s to leave room for aggregates + cleanup
-const TIME_BUDGET_MS  = 52_000;
+const TIME_BUDGET_MS  = 42_000;
 
 function getDB() {
   return createClient(
