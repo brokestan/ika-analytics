@@ -141,13 +141,13 @@ export interface StakedIkaUnlockedFields {
 // iSUI events — field names mirror IKA pattern with isui_balance
 export interface ISUILockedFields {
   account: string;
-  isui_balance: string;        // raw — divide by 1e9
+  i_sui_balance: string;        // raw — divide by 1e9
   state_time_ts: string;
 }
 
 export interface ISUIUnlockedFields {
   account: string;
-  isui_balance: string;
+  i_sui_balance: string;
   drizzlets_earned: string;    // raw count — NO 1e9 division
   state_time_ts: string;
   unlock_time_ts: string;
