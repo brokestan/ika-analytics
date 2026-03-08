@@ -174,7 +174,7 @@ export async function fetchLockStakeEvents(
     };
   } catch (err) {
     console.error('[fetchLockStakeEvents]', err);
-    return { data: [], nextCursor: null, hasNextPage: false };
+    throw err;
   }
 }
 
@@ -200,7 +200,7 @@ export async function fetchUnlockEvents(
     };
   } catch (err) {
     console.error('[fetchUnlockEvents]', err);
-    return { data: [], nextCursor: null, hasNextPage: false };
+    throw err;
   }
 }
 
@@ -224,7 +224,7 @@ export async function fetchISUILockEvents(
     };
   } catch (err) {
     console.error('[fetchISUILockEvents] EVENT:', EVENT_ISUI_LOCK, 'ERR:', err);
-    return { data: [], nextCursor: null, hasNextPage: false };
+    throw err;
   }
 }
 
@@ -250,7 +250,7 @@ export async function fetchISUIUnlockEvents(
     };
   } catch (err) {
     console.error('[fetchISUIUnlockEvents] EVENT:', EVENT_ISUI_UNLOCK, 'ERR:', err);
-    return { data: [], nextCursor: null, hasNextPage: false };
+    throw err;
   }
 }
 
