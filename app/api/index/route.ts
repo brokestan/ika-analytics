@@ -209,7 +209,7 @@ export async function GET(req: NextRequest) {
         }));
         for (const b of chunk(rows, BATCH_SIZE)) {
           await withRetry(() =>
-            db.from('locks').upsert(b, { onConflict: 'tx_digest', ignoreDuplicates: true })
+            db.from('locks').upsert(b, { onConflict: 'tx_digest' })
               .then(r => { if (r.error) throw new Error(r.error.message); return r; }),
             'ika-lock-upsert'
           );
@@ -285,7 +285,7 @@ export async function GET(req: NextRequest) {
         }));
         for (const b of chunk(rows, BATCH_SIZE)) {
           await withRetry(() =>
-            db.from('locks').upsert(b, { onConflict: 'tx_digest', ignoreDuplicates: true })
+            db.from('locks').upsert(b, { onConflict: 'tx_digest' })
               .then(r => { if (r.error) throw new Error(r.error.message); return r; }),
             'isui-lock-upsert'
           );
