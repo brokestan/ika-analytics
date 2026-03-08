@@ -183,7 +183,7 @@ export async function GET(req: NextRequest) {
           last_active_at: e.timestampMs ? new Date(parseInt(e.timestampMs)).toISOString() : now,
         }));
         for (const b of chunk(wallets, BATCH_SIZE)) {
-          await withRetry(() =>
+          await withRetry(async () =>
             db.from('wallets').upsert(b, { onConflict: 'address' })
               .then(r => { if (r.error) throw new Error(r.error.message); return r; }),
             'ika-lock-wallets'
@@ -204,7 +204,7 @@ export async function GET(req: NextRequest) {
           is_active:      true,
         }));
         for (const b of chunk(rows, BATCH_SIZE)) {
-          await withRetry(() =>
+          await withRetry(async () =>
             db.from('locks').upsert(b, { onConflict: 'tx_digest' })
               .then(r => { if (r.error) throw new Error(r.error.message); return r; }),
             'ika-lock-upsert'
@@ -224,7 +224,7 @@ export async function GET(req: NextRequest) {
         for (const e of page.data as any[]) {
           const unlockedAt = new Date(parseInt(e.unlock_time_ts)).toISOString();
           const drizzlets  = Number(e.drizzlets_earned);
-          await withRetry(() =>
+          await withRetry(async () =>
             db.from('locks')
               .update({ is_active: false, unlocked_at: unlockedAt, drizzlets_earned: drizzlets, updated_at: now })
               .eq('wallet_address', e.account).eq('state_time_ts', e.state_time_ts)
@@ -232,7 +232,7 @@ export async function GET(req: NextRequest) {
               .then(r => { if (r.error) throw new Error(r.error.message); return r; }),
             'ika-unlock-update'
           );
-          await withRetry(() =>
+          await withRetry(async () =>
             db.from('drizzlets').insert({
               wallet_address: e.account, source: 'unlock',
               amount: drizzlets, reference_id: e.txDigest, earned_at: unlockedAt,
@@ -259,7 +259,7 @@ export async function GET(req: NextRequest) {
           last_active_at: e.timestampMs ? new Date(parseInt(e.timestampMs)).toISOString() : now,
         }));
         for (const b of chunk(wallets, BATCH_SIZE)) {
-          await withRetry(() =>
+          await withRetry(async () =>
             db.from('wallets').upsert(b, { onConflict: 'address' })
               .then(r => { if (r.error) throw new Error(r.error.message); return r; }),
             'isui-lock-wallets'
@@ -280,7 +280,7 @@ export async function GET(req: NextRequest) {
           is_active:      true,
         }));
         for (const b of chunk(rows, BATCH_SIZE)) {
-          await withRetry(() =>
+          await withRetry(async () =>
             db.from('locks').upsert(b, { onConflict: 'tx_digest' })
               .then(r => { if (r.error) throw new Error(r.error.message); return r; }),
             'isui-lock-upsert'
@@ -300,7 +300,7 @@ export async function GET(req: NextRequest) {
         for (const e of page.data as any[]) {
           const unlockedAt = new Date(parseInt(e.unlock_time_ts)).toISOString();
           const drizzlets  = Number(e.drizzlets_earned);
-          await withRetry(() =>
+          await withRetry(async () =>
             db.from('locks')
               .update({ is_active: false, unlocked_at: unlockedAt, drizzlets_earned: drizzlets, updated_at: now })
               .eq('wallet_address', e.account).eq('state_time_ts', e.state_time_ts)
@@ -308,7 +308,7 @@ export async function GET(req: NextRequest) {
               .then(r => { if (r.error) throw new Error(r.error.message); return r; }),
             'isui-unlock-update'
           );
-          await withRetry(() =>
+          await withRetry(async () =>
             db.from('drizzlets').insert({
               wallet_address: e.account, source: 'isui_lock',
               amount: drizzlets, reference_id: e.txDigest, earned_at: unlockedAt,
@@ -475,7 +475,7 @@ async function rebuildAggregates(db: ReturnType<typeof getDB>, now: string) {
     total_drizzlets: s.drizzlets, active_locks: s.locks, updated_at: now,
   }));
   for (const b of chunk(walletRows, BATCH_SIZE)) {
-    await withRetry(() =>
+    await withRetry(async () =>
       db.from('wallets').upsert(b, { onConflict: 'address' })
         .then(r => { if (r.error) throw new Error(r.error.message); return r; }),
       'wallets-agg'
