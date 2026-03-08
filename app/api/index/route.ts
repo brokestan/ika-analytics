@@ -97,9 +97,9 @@ function errMsg(err: unknown): string {
 
 async function resetRunningState(db: ReturnType<typeof getDB>) {
   await db.from('indexer_state').update({
-    is_running: false,
+    is_running:  false,
     last_run_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
+    updated_at:  new Date().toISOString(),
   }).eq('id', 'lock_events');
 }
 
@@ -375,9 +375,6 @@ export async function GET(req: NextRequest) {
       log.riddle_fetched = false;
     }
 
-    // ── 6. Rebuild aggregates ─────────────────────────────────────────────────
-    await rebuildAggregates(db, now);
-
     const hasMore =
       (ikaLockResult    as StreamResult).hasMore ||
       (ikaUnlockResult  as StreamResult).hasMore ||
@@ -392,8 +389,12 @@ export async function GET(req: NextRequest) {
     await writeRefreshLog(db, mode, 'success', log);
     console.log('[Indexer] Done:', JSON.stringify(log));
 
-    // Reset before returning — never use finally so Vercel can't kill it before reset
+    // ── Reset BEFORE aggregates so Vercel can't kill before unlock ────────────
     await resetRunningState(db);
+
+    // ── 6. Rebuild aggregates (runs after lock released) ──────────────────────
+    await rebuildAggregates(db, now);
+
     return NextResponse.json({ success: true, has_more: hasMore, ...log });
 
   } catch (err) {
@@ -401,8 +402,6 @@ export async function GET(req: NextRequest) {
     console.error('[Indexer] FATAL:', msg);
     log.error = msg;
     await writeRefreshLog(db, mode, 'error', log);
-
-    // Reset before returning — never use finally so Vercel can't kill it before reset
     await resetRunningState(db);
     return NextResponse.json({ success: false, error: msg }, { status: 500 });
   }
