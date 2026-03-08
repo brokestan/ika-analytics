@@ -25,7 +25,7 @@ const BATCH_SIZE      = 50;
 const RATE_LIMIT_WAIT = 1500;
 const MAX_RETRIES     = 3;
 const TIME_BUDGET_MS  = 40_000;
-const MAX_RUN_AGE_MS  = 2 * 60 * 1000; // 2 minutes - fast auto-reset if stuck
+const MAX_RUN_AGE_MS  = 2 * 60 * 1000;
 
 function getDB() {
   return createClient(
@@ -98,14 +98,16 @@ function errMsg(err: unknown): string {
 }
 
 async function resetRunningState(db: ReturnType<typeof getDB>) {
+  console.log('[Indexer] Resetting is_running...');
   await db.from('indexer_state').update({
     is_running:  false,
     last_run_at: new Date().toISOString(),
     updated_at:  new Date().toISOString(),
   }).eq('id', 'lock_events');
+  console.log('[Indexer] is_running reset complete');
 }
 
-// --- RPC connectivity test ----------------------------------------------------
+// ---- RPC connectivity test --------------------------------------------------
 
 async function testRpcConnectivity(): Promise<{ ok: boolean; error?: string }> {
   try {
@@ -128,7 +130,7 @@ async function testRpcConnectivity(): Promise<{ ok: boolean; error?: string }> {
   }
 }
 
-// --- Main handler -------------------------------------------------------------
+// ---- Main handler -----------------------------------------------------------
 
 export async function GET(req: NextRequest) {
   if (!isAuthorized(req)) {
@@ -151,7 +153,7 @@ export async function GET(req: NextRequest) {
   }
   log.rpc_ok = true;
 
-  // Auto-reset stale is_running - 2 minute window so manual resets are rarely needed
+  // Auto-reset stale is_running after 2 minutes
   const { data: st } = await db
     .from('indexer_state').select('is_running, last_run_at').eq('id', 'lock_events').single();
 
@@ -182,7 +184,7 @@ export async function GET(req: NextRequest) {
       console.log('[Indexer] Checkpoints cleared - full mode');
     }
 
-    // -- 1. iSUI Locks ---------------------------------------------------------
+    // -- 1. iSUI Locks --------------------------------------------------------
     const isuiLockResult = await processStream(
       db, now, startMs, 'isui_lock_events',
       (cursor) => fetchISUILockEvents(cursor),
@@ -229,7 +231,7 @@ export async function GET(req: NextRequest) {
     );
     log.isui_locks = isuiLockResult;
 
-    // -- 2. iSUI Unlocks -------------------------------------------------------
+    // -- 2. iSUI Unlocks ------------------------------------------------------
     const isuiUnlockResult = await processStream(
       db, now, startMs, 'isui_unlock_events',
       (cursor) => fetchISUIUnlockEvents(cursor),
@@ -274,7 +276,7 @@ export async function GET(req: NextRequest) {
     );
     log.isui_unlocks = isuiUnlockResult;
 
-    // -- 3. IKA Locks (already complete - skips instantly) ---------------------
+    // -- 3. IKA Locks (already complete - skips instantly) --------------------
     const ikaLockResult = await processStream(
       db, now, startMs, 'lock_events',
       (cursor) => fetchLockStakeEvents(cursor),
@@ -321,7 +323,7 @@ export async function GET(req: NextRequest) {
     );
     log.ika_locks = ikaLockResult;
 
-    // -- 4. IKA Unlocks (resumes from saved checkpoint) ------------------------
+    // -- 4. IKA Unlocks (resumes from saved checkpoint) -----------------------
     const ikaUnlockResult = await processStream(
       db, now, startMs, 'unlock_events',
       (cursor) => fetchUnlockEvents(cursor),
@@ -366,7 +368,7 @@ export async function GET(req: NextRequest) {
     );
     log.ika_unlocks = ikaUnlockResult;
 
-    // -- 5. Riddle Pool --------------------------------------------------------
+    // -- 5. Riddle Pool -------------------------------------------------------
     try {
       const pool = await fetchRiddlePool();
       if (pool) {
@@ -403,13 +405,11 @@ export async function GET(req: NextRequest) {
     log.completed_at = new Date().toISOString();
     log.success      = true;
 
-    await writeRefreshLog(db, mode, 'success', log);
-    console.log('[Indexer] Done:', JSON.stringify(log));
-
-    // Reset BEFORE aggregates - ensures Vercel can't kill before is_running is cleared
+    // Reset FIRST - before anything else that could push past 60s
     await resetRunningState(db);
+    await writeRefreshLog(db, mode, 'success', log);
 
-    // Only rebuild aggregates when fully caught up - skips 10-15s during catchup
+    // Only rebuild aggregates when fully caught up
     if (!hasMore) {
       await rebuildAggregates(db, now);
     }
@@ -420,13 +420,14 @@ export async function GET(req: NextRequest) {
     const msg = errMsg(err);
     console.error('[Indexer] FATAL:', msg);
     log.error = msg;
-    await writeRefreshLog(db, mode, 'error', log);
+    // Reset FIRST - before logging
     await resetRunningState(db);
+    await writeRefreshLog(db, mode, 'error', log);
     return NextResponse.json({ success: false, error: msg }, { status: 500 });
   }
 }
 
-// --- processStream ------------------------------------------------------------
+// ---- processStream ----------------------------------------------------------
 
 type StreamResult = { count: number; pages: number; hasMore: boolean; error?: string };
 type AnyPage = {
@@ -460,8 +461,16 @@ async function processStream(
 
       const page = await fetcher(cursor);
 
-      if (page.data.length === 0) {
+      if (page.data.length === 0 && !page.hasNextPage) {
         return { count: totalCount, pages: totalPages, hasMore: false };
+      }
+
+      if (page.data.length === 0 && page.hasNextPage) {
+        if (page.nextCursor) {
+          await saveCheckpoint(db, streamKey, page.nextCursor.txDigest, page.nextCursor.eventSeq);
+          cursor = page.nextCursor;
+        }
+        continue;
       }
 
       const count = await writer(page, db, now);
@@ -469,7 +478,7 @@ async function processStream(
       totalPages += 1;
 
       // Always save checkpoint when there's a next cursor regardless of count.
-      // Dedup at DB level (onConflict) handles duplicates safely.
+      // DB-level dedup (onConflict) handles any duplicates safely.
       if (page.nextCursor) {
         await saveCheckpoint(db, streamKey, page.nextCursor.txDigest, page.nextCursor.eventSeq);
         cursor = page.nextCursor;
@@ -486,7 +495,7 @@ async function processStream(
   }
 }
 
-// --- Aggregate Builder --------------------------------------------------------
+// ---- Aggregate Builder ------------------------------------------------------
 
 async function rebuildAggregates(db: ReturnType<typeof getDB>, now: string) {
   const { data: activeLocks }   = await db.from('locks')
@@ -576,12 +585,12 @@ async function rebuildAggregates(db: ReturnType<typeof getDB>, now: string) {
 
   await db.from('drizzlet_distribution_cache').upsert(
     {
-      id:                  'main',
-      locked_ika_rewards:  totalActiveDrz,
-      isui_rewards:        isuiDrz,
-      unlocked_drizzlets:  unlockedDrz,
-      riddle_rewards:      riddleDrz,
-      updated_at:          now,
+      id:                 'main',
+      locked_ika_rewards: totalActiveDrz,
+      isui_rewards:       isuiDrz,
+      unlocked_drizzlets: unlockedDrz,
+      riddle_rewards:     riddleDrz,
+      updated_at:         now,
     },
     { onConflict: 'id' }
   );
