@@ -393,7 +393,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ success: false, error: msg }, { status: 500 });
 
   } finally {
-    await getDB().from('indexer_state').update({
+    await db.from('indexer_state').update({
       is_running: false, last_run_at: new Date().toISOString(), updated_at: new Date().toISOString(),
     }).eq('id', 'lock_events');
   }
