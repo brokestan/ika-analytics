@@ -491,7 +491,7 @@ async function processStream(
   } catch (err) {
     const msg = errMsg(err);
     console.error(`[processStream:${streamKey}] ERROR:`, msg);
-    return { count: totalCount, pages: totalPages, hasMore: false, error: msg };
+    return { count: totalCount, pages: totalPages, hasMore: true, error: msg };
   }
 }
 
