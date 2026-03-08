@@ -170,101 +170,7 @@ export async function GET(req: NextRequest) {
       console.log('[Indexer] Checkpoints cleared — full mode');
     }
 
-    // ── 1. IKA Locks ─────────────────────────────────────────────────────────
-    const ikaLockResult = await processStream(
-      db, now, startMs, 'lock_events',
-      (cursor) => fetchLockStakeEvents(cursor),
-      async (page, db, now) => {
-        const uniqueEvents  = dedupEvents(page.data as any[]);
-        const uniqueWallets = dedupByAddress(uniqueEvents);
-
-        const wallets = uniqueWallets.map((e: any) => ({
-          address:        e.account,
-          last_active_at: e.timestampMs ? new Date(parseInt(e.timestampMs)).toISOString() : now,
-        }));
-        for (const b of chunk(wallets, BATCH_SIZE)) {
-          await withRetry(async () =>
-            db.from('wallets').upsert(b, { onConflict: 'address' })
-              .then(r => { if (r.error) throw new Error(r.error.message); return r; }),
-            'ika-lock-wallets'
-          );
-        }
-
-        const rows = uniqueEvents.map((e: any) => ({
-          wallet_address: e.account,
-          tx_digest:      e.txDigest,
-          asset_type:     'ika',
-          lock_duration:  0,
-          ika_amount:     toHumanIka(e.staked_ika_balance),
-          isui_amount:    0,
-          locked_at:      e.state_time_ts
-            ? new Date(parseInt(e.state_time_ts)).toISOString()
-            : new Date(parseInt(e.timestampMs || '0')).toISOString(),
-          state_time_ts:  e.state_time_ts,
-          is_active:      true,
-        }));
-        for (const b of chunk(rows, BATCH_SIZE)) {
-          await withRetry(async () =>
-            db.from('locks').upsert(b, { onConflict: 'tx_digest' })
-              .then(r => { if (r.error) throw new Error(r.error.message); return r; }),
-            'ika-lock-upsert'
-          );
-        }
-        return rows.length;
-      }
-    );
-    log.ika_locks = ikaLockResult;
-
-    // ── 2. IKA Unlocks ────────────────────────────────────────────────────────
-    const ikaUnlockResult = await processStream(
-      db, now, startMs, 'unlock_events',
-      (cursor) => fetchUnlockEvents(cursor),
-      async (page, db, now) => {
-        const events = dedupEvents(page.data as any[]);
-
-        // Batch update locks to inactive — filter by both wallet+state_time_ts for safety
-        for (const b of chunk(events, BATCH_SIZE)) {
-          for (const e of b) {
-            await withRetry(async () =>
-              db.from('locks')
-                .update({
-                  is_active:        false,
-                  unlocked_at:      new Date(parseInt(e.unlock_time_ts)).toISOString(),
-                  drizzlets_earned: Number(e.drizzlets_earned),
-                  updated_at:       now,
-                })
-                .eq('wallet_address', e.account)
-                .eq('state_time_ts',  e.state_time_ts)
-                .eq('asset_type',     'ika')
-                .eq('is_active',      true)
-                .then(r => { if (r.error) throw new Error(r.error.message); return r; }),
-              'ika-unlock-update'
-            );
-          }
-        }
-
-        // Batch insert drizzlets
-        const drizzletRows = events.map((e: any) => ({
-          wallet_address: e.account,
-          source:         'unlock',
-          amount:         Number(e.drizzlets_earned),
-          reference_id:   e.txDigest,
-          earned_at:      new Date(parseInt(e.unlock_time_ts)).toISOString(),
-        }));
-        for (const b of chunk(drizzletRows, BATCH_SIZE)) {
-          await withRetry(async () =>
-            db.from('drizzlets').upsert(b, { onConflict: 'wallet_address,reference_id' })
-              .then(r => { if (r.error) throw new Error(r.error.message); return r; }),
-            'ika-unlock-drizzlets'
-          );
-        }
-
-        return events.length;
-      }
-    );
-    log.ika_unlocks = ikaUnlockResult;
-
-    // ── 3. iSUI Locks ─────────────────────────────────────────────────────────
+    // ── 1. iSUI Locks (first — gets full time budget) ─────────────────────────
     const isuiLockResult = await processStream(
       db, now, startMs, 'isui_lock_events',
       (cursor) => fetchISUILockEvents(cursor),
@@ -309,35 +215,31 @@ export async function GET(req: NextRequest) {
     );
     log.isui_locks = isuiLockResult;
 
-    // ── 4. iSUI Unlocks ───────────────────────────────────────────────────────
+    // ── 2. iSUI Unlocks ───────────────────────────────────────────────────────
     const isuiUnlockResult = await processStream(
       db, now, startMs, 'isui_unlock_events',
       (cursor) => fetchISUIUnlockEvents(cursor),
       async (page, db, now) => {
         const events = dedupEvents(page.data as any[]);
 
-        // Batch update locks to inactive — filter by both wallet+state_time_ts for safety
-        for (const b of chunk(events, BATCH_SIZE)) {
-          for (const e of b) {
-            await withRetry(async () =>
-              db.from('locks')
-                .update({
-                  is_active:        false,
-                  unlocked_at:      new Date(parseInt(e.unlock_time_ts)).toISOString(),
-                  drizzlets_earned: Number(e.drizzlets_earned),
-                  updated_at:       now,
-                })
-                .eq('wallet_address', e.account)
-                .eq('state_time_ts',  e.state_time_ts)
-                .eq('asset_type',     'isui')
-                .eq('is_active',      true)
-                .then(r => { if (r.error) throw new Error(r.error.message); return r; }),
-              'isui-unlock-update'
-            );
-          }
+        for (const e of events) {
+          await withRetry(async () =>
+            db.from('locks')
+              .update({
+                is_active:        false,
+                unlocked_at:      new Date(parseInt(e.unlock_time_ts)).toISOString(),
+                drizzlets_earned: Number(e.drizzlets_earned),
+                updated_at:       now,
+              })
+              .eq('wallet_address', e.account)
+              .eq('state_time_ts',  e.state_time_ts)
+              .eq('asset_type',     'isui')
+              .eq('is_active',      true)
+              .then(r => { if (r.error) throw new Error(r.error.message); return r; }),
+            'isui-unlock-update'
+          );
         }
 
-        // Batch insert drizzlets
         const drizzletRows = events.map((e: any) => ({
           wallet_address: e.account,
           source:         'isui_lock',
@@ -357,6 +259,96 @@ export async function GET(req: NextRequest) {
       }
     );
     log.isui_unlocks = isuiUnlockResult;
+
+    // ── 3. IKA Locks (already complete — skips instantly) ─────────────────────
+    const ikaLockResult = await processStream(
+      db, now, startMs, 'lock_events',
+      (cursor) => fetchLockStakeEvents(cursor),
+      async (page, db, now) => {
+        const uniqueEvents  = dedupEvents(page.data as any[]);
+        const uniqueWallets = dedupByAddress(uniqueEvents);
+
+        const wallets = uniqueWallets.map((e: any) => ({
+          address:        e.account,
+          last_active_at: e.timestampMs ? new Date(parseInt(e.timestampMs)).toISOString() : now,
+        }));
+        for (const b of chunk(wallets, BATCH_SIZE)) {
+          await withRetry(async () =>
+            db.from('wallets').upsert(b, { onConflict: 'address' })
+              .then(r => { if (r.error) throw new Error(r.error.message); return r; }),
+            'ika-lock-wallets'
+          );
+        }
+
+        const rows = uniqueEvents.map((e: any) => ({
+          wallet_address: e.account,
+          tx_digest:      e.txDigest,
+          asset_type:     'ika',
+          lock_duration:  0,
+          ika_amount:     toHumanIka(e.staked_ika_balance),
+          isui_amount:    0,
+          locked_at:      e.state_time_ts
+            ? new Date(parseInt(e.state_time_ts)).toISOString()
+            : new Date(parseInt(e.timestampMs || '0')).toISOString(),
+          state_time_ts:  e.state_time_ts,
+          is_active:      true,
+        }));
+        for (const b of chunk(rows, BATCH_SIZE)) {
+          await withRetry(async () =>
+            db.from('locks').upsert(b, { onConflict: 'tx_digest' })
+              .then(r => { if (r.error) throw new Error(r.error.message); return r; }),
+            'ika-lock-upsert'
+          );
+        }
+        return rows.length;
+      }
+    );
+    log.ika_locks = ikaLockResult;
+
+    // ── 4. IKA Unlocks (resumes from saved checkpoint) ────────────────────────
+    const ikaUnlockResult = await processStream(
+      db, now, startMs, 'unlock_events',
+      (cursor) => fetchUnlockEvents(cursor),
+      async (page, db, now) => {
+        const events = dedupEvents(page.data as any[]);
+
+        for (const e of events) {
+          await withRetry(async () =>
+            db.from('locks')
+              .update({
+                is_active:        false,
+                unlocked_at:      new Date(parseInt(e.unlock_time_ts)).toISOString(),
+                drizzlets_earned: Number(e.drizzlets_earned),
+                updated_at:       now,
+              })
+              .eq('wallet_address', e.account)
+              .eq('state_time_ts',  e.state_time_ts)
+              .eq('asset_type',     'ika')
+              .eq('is_active',      true)
+              .then(r => { if (r.error) throw new Error(r.error.message); return r; }),
+            'ika-unlock-update'
+          );
+        }
+
+        const drizzletRows = events.map((e: any) => ({
+          wallet_address: e.account,
+          source:         'unlock',
+          amount:         Number(e.drizzlets_earned),
+          reference_id:   e.txDigest,
+          earned_at:      new Date(parseInt(e.unlock_time_ts)).toISOString(),
+        }));
+        for (const b of chunk(drizzletRows, BATCH_SIZE)) {
+          await withRetry(async () =>
+            db.from('drizzlets').upsert(b, { onConflict: 'wallet_address,reference_id' })
+              .then(r => { if (r.error) throw new Error(r.error.message); return r; }),
+            'ika-unlock-drizzlets'
+          );
+        }
+
+        return events.length;
+      }
+    );
+    log.ika_unlocks = ikaUnlockResult;
 
     // ── 5. Riddle Pool ────────────────────────────────────────────────────────
     try {
