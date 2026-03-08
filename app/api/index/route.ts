@@ -24,7 +24,7 @@ import { LockDuration } from '@/lib/types';
 const BATCH_SIZE      = 50;
 const RATE_LIMIT_WAIT = 1500;
 const MAX_RETRIES     = 3;
-const TIME_BUDGET_MS  = 40_000;
+const TIME_BUDGET_MS  = 55_000; // bumped from 40k — safe now that aggregates skip during catchup
 const MAX_RUN_AGE_MS  = 30 * 60 * 1000;
 
 function getDB() {
@@ -389,11 +389,13 @@ export async function GET(req: NextRequest) {
     await writeRefreshLog(db, mode, 'success', log);
     console.log('[Indexer] Done:', JSON.stringify(log));
 
-    // ── Reset BEFORE aggregates so Vercel can't kill before unlock ────────────
+    // Reset BEFORE aggregates — must happen before Vercel 60s kill
     await resetRunningState(db);
 
-    // ── 6. Rebuild aggregates (runs after lock released) ──────────────────────
-    await rebuildAggregates(db, now);
+    // Only rebuild aggregates when fully caught up — skipping saves 10-15s during catchup
+    if (!hasMore) {
+      await rebuildAggregates(db, now);
+    }
 
     return NextResponse.json({ success: true, has_more: hasMore, ...log });
 
@@ -445,13 +447,20 @@ async function processStream(
       totalCount += count;
       totalPages += 1;
 
-      if (page.nextCursor) {
+      // Fix: only advance checkpoint when data was actually written
+      if (count > 0 && page.nextCursor) {
         await saveCheckpoint(db, streamKey, page.nextCursor.txDigest, page.nextCursor.eventSeq);
         cursor = page.nextCursor;
       }
 
       if (!page.hasNextPage) {
         return { count: totalCount, pages: totalPages, hasMore: false };
+      }
+
+      // If nothing was written but there are more pages, still advance cursor
+      // to avoid infinite loop on deduplicated pages
+      if (count === 0 && page.nextCursor) {
+        cursor = page.nextCursor;
       }
     }
   } catch (err) {
