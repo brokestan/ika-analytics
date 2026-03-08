@@ -24,7 +24,7 @@ import { LockDuration } from '@/lib/types';
 const BATCH_SIZE      = 50;
 const RATE_LIMIT_WAIT = 1500;
 const MAX_RETRIES     = 3;
-const TIME_BUDGET_MS  = 55_000; // bumped from 40k — safe now that aggregates skip during catchup
+const TIME_BUDGET_MS  = 48_000; // bumped from 40k — safe now that aggregates skip during catchup
 const MAX_RUN_AGE_MS  = 30 * 60 * 1000;
 
 function getDB() {
