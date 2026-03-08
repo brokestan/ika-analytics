@@ -21,12 +21,11 @@ import {
 import { buildLockDistribution, forecastDrizzlets } from '@/lib/calculations';
 import { LockDuration } from '@/lib/types';
 
-const BATCH_SIZE      = 25;
+const BATCH_SIZE      = 50;   // increased from 25
 const RATE_LIMIT_WAIT = 1500;
 const MAX_RETRIES     = 3;
-
-// Time budget: stop looping pages at 52s to leave room for aggregates + cleanup
-const TIME_BUDGET_MS  = 42_000;
+const TIME_BUDGET_MS  = 40_000;
+const MAX_RUN_AGE_MS  = 30 * 60 * 1000; // 30 minutes — auto-reset stale is_running
 
 function getDB() {
   return createClient(
@@ -55,20 +54,48 @@ function chunk<T>(arr: T[], size: number): T[][] {
   return out;
 }
 
-async function withRetry<T>(fn: () => Promise<T> | PromiseLike<T>, label: string): Promise<T | null> {
+// Fix 2: throw after max retries so failures are visible, not silent
+async function withRetry<T>(fn: () => Promise<T>, label: string): Promise<T> {
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try { return await fn(); }
     catch (err) {
-      const msg = String(err);
+      const msg = err instanceof Error ? err.message : String(err);
       console.warn(`[${label}] attempt ${attempt}: ${msg}`);
       if ((msg.includes('429') || msg.includes('Too Many')) && attempt < MAX_RETRIES) {
         await sleep(RATE_LIMIT_WAIT * attempt);
         continue;
       }
-      if (attempt === MAX_RETRIES) return null;
+      if (attempt === MAX_RETRIES) throw new Error(`[${label}] failed after ${MAX_RETRIES} attempts: ${msg}`);
     }
   }
-  return null;
+  throw new Error(`[${label}] unreachable`);
+}
+
+// Fix 3: dedup by txDigest+eventSeq — safer than txDigest alone
+function dedupEvents(events: any[]): any[] {
+  const seen = new Set<string>();
+  return events.filter(e => {
+    const key = `${e.txDigest}:${e.eventSeq ?? '0'}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function dedupByAddress(events: any[]): any[] {
+  const seen = new Set<string>();
+  return events.filter(e => {
+    if (seen.has(e.account)) return false;
+    seen.add(e.account);
+    return true;
+  });
+}
+
+// Fix 5: clean error message extraction
+function errMsg(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (typeof err === 'object' && err !== null && 'message' in err) return String((err as any).message);
+  return String(err);
 }
 
 // ─── RPC connectivity test ────────────────────────────────────────────────────
@@ -90,7 +117,7 @@ async function testRpcConnectivity(): Promise<{ ok: boolean; error?: string }> {
     if (json.error) return { ok: false, error: `RPC error: ${json.error.message}` };
     return { ok: true };
   } catch (err) {
-    return { ok: false, error: `RPC unreachable: ${String(err)}` };
+    return { ok: false, error: `RPC unreachable: ${errMsg(err)}` };
   }
 }
 
@@ -101,31 +128,38 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
 
-  const mode     = req.nextUrl.searchParams.get('mode') === 'full' ? 'full' : 'checkpoint';
-  const db       = getDB();
-  const now      = new Date().toISOString();
-  const startMs  = Date.now();
+  const mode    = req.nextUrl.searchParams.get('mode') === 'full' ? 'full' : 'checkpoint';
+  const db      = getDB();
+  const now     = new Date().toISOString();
+  const startMs = Date.now();
   const log: Record<string, unknown> = { mode, started_at: now };
 
   // ── RPC connectivity check ─────────────────────────────────────────────────
   const rpcCheck = await testRpcConnectivity();
   if (!rpcCheck.ok) {
-    console.error('[Indexer] RPC connectivity failed:', rpcCheck.error);
     return NextResponse.json({
       success: false,
       error: rpcCheck.error,
-      rpc_url: process.env.SUI_RPC_URL || 'https://fullnode.mainnet.sui.io:443',
       hint: 'RPC is unreachable from Vercel. Check SUI_RPC_URL env var.',
     }, { status: 502 });
   }
   log.rpc_ok = true;
 
-  // Concurrency guard
+  // Fix 1: auto-reset stale is_running if last run was > 30 minutes ago
   const { data: st } = await db
-    .from('indexer_state').select('is_running').eq('id', 'lock_events').single();
+    .from('indexer_state').select('is_running, last_run_at').eq('id', 'lock_events').single();
+
   if (st?.is_running) {
-    return NextResponse.json({ message: 'Already running' }, { status: 409 });
+    const lastRunAt  = st.last_run_at ? new Date(st.last_run_at).getTime() : 0;
+    const ageMs      = Date.now() - lastRunAt;
+    if (ageMs > MAX_RUN_AGE_MS) {
+      console.warn('[Indexer] Stale is_running detected — auto-resetting');
+      await db.from('indexer_state').update({ is_running: false, updated_at: now }).eq('id', 'lock_events');
+    } else {
+      return NextResponse.json({ message: 'Already running' }, { status: 409 });
+    }
   }
+
   await db.from('indexer_state')
     .update({ is_running: true, updated_at: now }).eq('id', 'lock_events');
 
@@ -145,18 +179,26 @@ export async function GET(req: NextRequest) {
       db, now, startMs, 'lock_events',
       (cursor) => fetchLockStakeEvents(cursor),
       async (page, db, now) => {
-        const wallets = page.data.map((e: any) => ({
+        const uniqueEvents  = dedupEvents(page.data as any[]);
+        const uniqueWallets = dedupByAddress(uniqueEvents);
+
+        const wallets = uniqueWallets.map((e: any) => ({
           address:        e.account,
           last_active_at: e.timestampMs ? new Date(parseInt(e.timestampMs)).toISOString() : now,
         }));
         for (const b of chunk(wallets, BATCH_SIZE)) {
-          await withRetry(() => db.from('wallets').upsert(b, { onConflict: 'address' }).then(r => { if (r.error) throw r.error; return r; }), 'ika-lock-wallets');
+          await withRetry(() =>
+            db.from('wallets').upsert(b, { onConflict: 'address' })
+              .then(r => { if (r.error) throw new Error(r.error.message); return r; }),
+            'ika-lock-wallets'
+          );
         }
-        const rows = page.data.map((e: any) => ({
+
+        const rows = uniqueEvents.map((e: any) => ({
           wallet_address: e.account,
           tx_digest:      e.txDigest,
           asset_type:     'ika',
-          lock_duration:  e.lock_duration,
+          lock_duration:  0,
           ika_amount:     toHumanIka(e.staked_ika_balance),
           isui_amount:    0,
           locked_at:      e.state_time_ts
@@ -166,7 +208,11 @@ export async function GET(req: NextRequest) {
           is_active:      true,
         }));
         for (const b of chunk(rows, BATCH_SIZE)) {
-          await withRetry(() => db.from('locks').upsert(b, { onConflict: 'tx_digest', ignoreDuplicates: true }).then(r => { if (r.error) throw r.error; return r; }), 'ika-lock-upsert');
+          await withRetry(() =>
+            db.from('locks').upsert(b, { onConflict: 'tx_digest', ignoreDuplicates: true })
+              .then(r => { if (r.error) throw new Error(r.error.message); return r; }),
+            'ika-lock-upsert'
+          );
         }
         return rows.length;
       }
@@ -182,14 +228,21 @@ export async function GET(req: NextRequest) {
         for (const e of page.data as any[]) {
           const unlockedAt = new Date(parseInt(e.unlock_time_ts)).toISOString();
           const drizzlets  = Number(e.drizzlets_earned);
-          await withRetry(() => db.from('locks')
-            .update({ is_active: false, unlocked_at: unlockedAt, drizzlets_earned: drizzlets, updated_at: now })
-            .eq('wallet_address', e.account).eq('state_time_ts', e.state_time_ts)
-            .eq('asset_type', 'ika').eq('is_active', true).then(r => { if (r.error) throw r.error; return r; }), 'ika-unlock-update');
-          await withRetry(() => db.from('drizzlets').insert({
-            wallet_address: e.account, source: 'unlock',
-            amount: drizzlets, reference_id: e.txDigest, earned_at: unlockedAt,
-          }).then(r => { if (r.error && !String(r.error).includes('duplicate')) throw r.error; return r; }), 'ika-unlock-drizzlets');
+          await withRetry(() =>
+            db.from('locks')
+              .update({ is_active: false, unlocked_at: unlockedAt, drizzlets_earned: drizzlets, updated_at: now })
+              .eq('wallet_address', e.account).eq('state_time_ts', e.state_time_ts)
+              .eq('asset_type', 'ika').eq('is_active', true)
+              .then(r => { if (r.error) throw new Error(r.error.message); return r; }),
+            'ika-unlock-update'
+          );
+          await withRetry(() =>
+            db.from('drizzlets').insert({
+              wallet_address: e.account, source: 'unlock',
+              amount: drizzlets, reference_id: e.txDigest, earned_at: unlockedAt,
+            }).then(r => { if (r.error) throw new Error(r.error.message); return r; }),
+            'ika-unlock-drizzlets'
+          );
           count++;
         }
         return count;
@@ -202,14 +255,22 @@ export async function GET(req: NextRequest) {
       db, now, startMs, 'isui_lock_events',
       (cursor) => fetchISUILockEvents(cursor),
       async (page, db, now) => {
-        const wallets = page.data.map((e: any) => ({
+        const uniqueEvents  = dedupEvents(page.data as any[]);
+        const uniqueWallets = dedupByAddress(uniqueEvents);
+
+        const wallets = uniqueWallets.map((e: any) => ({
           address:        e.account,
           last_active_at: e.timestampMs ? new Date(parseInt(e.timestampMs)).toISOString() : now,
         }));
         for (const b of chunk(wallets, BATCH_SIZE)) {
-          await withRetry(() => db.from('wallets').upsert(b, { onConflict: 'address' }).then(r => { if (r.error) throw r.error; return r; }), 'isui-lock-wallets');
+          await withRetry(() =>
+            db.from('wallets').upsert(b, { onConflict: 'address' })
+              .then(r => { if (r.error) throw new Error(r.error.message); return r; }),
+            'isui-lock-wallets'
+          );
         }
-        const rows = page.data.map((e: any) => ({
+
+        const rows = uniqueEvents.map((e: any) => ({
           wallet_address: e.account,
           tx_digest:      e.txDigest,
           asset_type:     'isui',
@@ -223,7 +284,11 @@ export async function GET(req: NextRequest) {
           is_active:      true,
         }));
         for (const b of chunk(rows, BATCH_SIZE)) {
-          await withRetry(() => db.from('locks').upsert(b, { onConflict: 'tx_digest', ignoreDuplicates: true }).then(r => { if (r.error) throw r.error; return r; }), 'isui-lock-upsert');
+          await withRetry(() =>
+            db.from('locks').upsert(b, { onConflict: 'tx_digest', ignoreDuplicates: true })
+              .then(r => { if (r.error) throw new Error(r.error.message); return r; }),
+            'isui-lock-upsert'
+          );
         }
         return rows.length;
       }
@@ -239,14 +304,21 @@ export async function GET(req: NextRequest) {
         for (const e of page.data as any[]) {
           const unlockedAt = new Date(parseInt(e.unlock_time_ts)).toISOString();
           const drizzlets  = Number(e.drizzlets_earned);
-          await withRetry(() => db.from('locks')
-            .update({ is_active: false, unlocked_at: unlockedAt, drizzlets_earned: drizzlets, updated_at: now })
-            .eq('wallet_address', e.account).eq('state_time_ts', e.state_time_ts)
-            .eq('asset_type', 'isui').eq('is_active', true).then(r => { if (r.error) throw r.error; return r; }), 'isui-unlock-update');
-          await withRetry(() => db.from('drizzlets').insert({
-            wallet_address: e.account, source: 'isui_lock',
-            amount: drizzlets, reference_id: e.txDigest, earned_at: unlockedAt,
-          }).then(r => { if (r.error && !String(r.error).includes('duplicate')) throw r.error; return r; }), 'isui-unlock-drizzlets');
+          await withRetry(() =>
+            db.from('locks')
+              .update({ is_active: false, unlocked_at: unlockedAt, drizzlets_earned: drizzlets, updated_at: now })
+              .eq('wallet_address', e.account).eq('state_time_ts', e.state_time_ts)
+              .eq('asset_type', 'isui').eq('is_active', true)
+              .then(r => { if (r.error) throw new Error(r.error.message); return r; }),
+            'isui-unlock-update'
+          );
+          await withRetry(() =>
+            db.from('drizzlets').insert({
+              wallet_address: e.account, source: 'isui_lock',
+              amount: drizzlets, reference_id: e.txDigest, earned_at: unlockedAt,
+            }).then(r => { if (r.error && !r.error.message.includes('duplicate')) throw new Error(r.error.message); return r; }),
+            'isui-unlock-drizzlets'
+          );
           count++;
         }
         return count;
@@ -255,16 +327,21 @@ export async function GET(req: NextRequest) {
     log.isui_unlocks = isuiUnlockResult;
 
     // ── 5. Riddle Pool ────────────────────────────────────────────────────────
-    const pool = await withRetry(() => fetchRiddlePool(), 'riddle-pool');
-    if (pool) {
-      await Promise.all([
-        db.from('riddle_pools').upsert({ pool_index: 1, amount: pool.pool1, raw_amount: String(pool.pool1), fetched_at: now }, { onConflict: 'pool_index' }),
-        db.from('riddle_pools').upsert({ pool_index: 2, amount: pool.pool2, raw_amount: String(pool.pool2), fetched_at: now }, { onConflict: 'pool_index' }),
-        db.from('riddle_pools').upsert({ pool_index: 3, amount: pool.pool3, raw_amount: String(pool.pool3), fetched_at: now }, { onConflict: 'pool_index' }),
-      ]);
-      log.riddle_pools = pool;
+    try {
+      const pool = await fetchRiddlePool();
+      if (pool) {
+        await Promise.all([
+          db.from('riddle_pools').upsert({ pool_index: 1, amount: pool.pool1, raw_amount: String(pool.pool1), fetched_at: now }, { onConflict: 'pool_index' }),
+          db.from('riddle_pools').upsert({ pool_index: 2, amount: pool.pool2, raw_amount: String(pool.pool2), fetched_at: now }, { onConflict: 'pool_index' }),
+          db.from('riddle_pools').upsert({ pool_index: 3, amount: pool.pool3, raw_amount: String(pool.pool3), fetched_at: now }, { onConflict: 'pool_index' }),
+        ]);
+        log.riddle_pools = pool;
+      }
+      log.riddle_fetched = !!pool;
+    } catch (err) {
+      console.error('[riddle-pool]', errMsg(err));
+      log.riddle_fetched = false;
     }
-    log.riddle_fetched = !!pool;
 
     // ── 6. Rebuild aggregates ─────────────────────────────────────────────────
     await rebuildAggregates(db, now);
@@ -275,17 +352,17 @@ export async function GET(req: NextRequest) {
       (isuiLockResult   as StreamResult).hasMore ||
       (isuiUnlockResult as StreamResult).hasMore;
 
-    log.has_more      = hasMore;
-    log.elapsed_ms    = Date.now() - startMs;
-    log.completed_at  = new Date().toISOString();
-    log.success       = true;
+    log.has_more     = hasMore;
+    log.elapsed_ms   = Date.now() - startMs;
+    log.completed_at = new Date().toISOString();
+    log.success      = true;
 
     await writeRefreshLog(db, mode, 'success', log);
     console.log('[Indexer] Done:', JSON.stringify(log));
     return NextResponse.json({ success: true, has_more: hasMore, ...log });
 
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = errMsg(err);
     console.error('[Indexer] FATAL:', msg);
     log.error = msg;
     await writeRefreshLog(db, mode, 'error', log);
@@ -298,7 +375,7 @@ export async function GET(req: NextRequest) {
   }
 }
 
-// ─── processStream — loops pages until time budget or no more pages ───────────
+// ─── processStream ────────────────────────────────────────────────────────────
 
 type StreamResult = { count: number; pages: number; hasMore: boolean; error?: string };
 type AnyPage      = { data: unknown[]; nextCursor: { txDigest: string; eventSeq: string } | null; hasNextPage: boolean };
@@ -321,7 +398,6 @@ async function processStream(
       : null;
 
     while (true) {
-      // Stop if we're approaching the time limit
       if (Date.now() - startMs > TIME_BUDGET_MS) {
         console.log(`[${streamKey}] Time budget reached after ${totalPages} pages`);
         return { count: totalCount, pages: totalPages, hasMore: true };
@@ -347,7 +423,7 @@ async function processStream(
       }
     }
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = errMsg(err);
     console.error(`[processStream:${streamKey}] ERROR:`, msg);
     return { count: totalCount, pages: totalPages, hasMore: false, error: msg };
   }
@@ -402,9 +478,12 @@ async function rebuildAggregates(db: ReturnType<typeof getDB>, now: string) {
     address: addr, ika_locked: s.ika, isui_locked: s.isui,
     total_drizzlets: s.drizzlets, active_locks: s.locks, updated_at: now,
   }));
-
   for (const b of chunk(walletRows, BATCH_SIZE)) {
-    await withRetry(() => db.from('wallets').upsert(b, { onConflict: 'address' }).then(r => { if (r.error) throw r.error; return r; }), 'wallets-agg');
+    await withRetry(() =>
+      db.from('wallets').upsert(b, { onConflict: 'address' })
+        .then(r => { if (r.error) throw new Error(r.error.message); return r; }),
+      'wallets-agg'
+    );
   }
 
   const dist = buildLockDistribution(
@@ -433,16 +512,4 @@ async function rebuildAggregates(db: ReturnType<typeof getDB>, now: string) {
       id: 'main', total_ika_staked: totalIka, total_isui_staked: totalISUI,
       total_locked_nfts:         activeLocks?.length  || 0,
       total_unlocked_nfts:       inactiveLocks?.length || 0,
-      total_staking_nfts:        (activeLocks?.length || 0) + (inactiveLocks?.length || 0),
-      unique_staking_wallets:    Object.keys(wmap).length,
-      total_drizzlets_earned:    forecast.current,
-      forecast_drizzlets_30d:    forecast.day30,
-      forecast_drizzlets_60d:    forecast.day60,
-      forecast_drizzlets_season: forecast.season_end,
-      last_indexed_at: now, updated_at: now,
-    },
-    { onConflict: 'id' }
-  );
-
-  console.log(`[Agg] IKA:${totalIka.toFixed(0)} iSUI:${totalISUI.toFixed(0)} Drz:${totalDrizzlets.toLocaleString()} Wallets:${Object.keys(wmap).length}`);
-    }
+      total_staking_nfts:        (activeLocks?.length || 0) + (
