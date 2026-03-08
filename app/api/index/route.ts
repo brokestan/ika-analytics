@@ -21,11 +21,11 @@ import {
 import { buildLockDistribution, forecastDrizzlets } from '@/lib/calculations';
 import { LockDuration } from '@/lib/types';
 
-const BATCH_SIZE      = 50;   // increased from 25
+const BATCH_SIZE      = 50;
 const RATE_LIMIT_WAIT = 1500;
 const MAX_RETRIES     = 3;
 const TIME_BUDGET_MS  = 40_000;
-const MAX_RUN_AGE_MS  = 30 * 60 * 1000; // 30 minutes — auto-reset stale is_running
+const MAX_RUN_AGE_MS  = 30 * 60 * 1000;
 
 function getDB() {
   return createClient(
@@ -54,7 +54,6 @@ function chunk<T>(arr: T[], size: number): T[][] {
   return out;
 }
 
-// Fix 2: throw after max retries so failures are visible, not silent
 async function withRetry<T>(fn: () => Promise<T>, label: string): Promise<T> {
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try { return await fn(); }
@@ -71,7 +70,6 @@ async function withRetry<T>(fn: () => Promise<T>, label: string): Promise<T> {
   throw new Error(`[${label}] unreachable`);
 }
 
-// Fix 3: dedup by txDigest+eventSeq — safer than txDigest alone
 function dedupEvents(events: any[]): any[] {
   const seen = new Set<string>();
   return events.filter(e => {
@@ -91,7 +89,6 @@ function dedupByAddress(events: any[]): any[] {
   });
 }
 
-// Fix 5: clean error message extraction
 function errMsg(err: unknown): string {
   if (err instanceof Error) return err.message;
   if (typeof err === 'object' && err !== null && 'message' in err) return String((err as any).message);
@@ -134,7 +131,6 @@ export async function GET(req: NextRequest) {
   const startMs = Date.now();
   const log: Record<string, unknown> = { mode, started_at: now };
 
-  // ── RPC connectivity check ─────────────────────────────────────────────────
   const rpcCheck = await testRpcConnectivity();
   if (!rpcCheck.ok) {
     return NextResponse.json({
@@ -145,13 +141,13 @@ export async function GET(req: NextRequest) {
   }
   log.rpc_ok = true;
 
-  // Fix 1: auto-reset stale is_running if last run was > 30 minutes ago
+  // Auto-reset stale is_running if last run was > 30 minutes ago
   const { data: st } = await db
     .from('indexer_state').select('is_running, last_run_at').eq('id', 'lock_events').single();
 
   if (st?.is_running) {
-    const lastRunAt  = st.last_run_at ? new Date(st.last_run_at).getTime() : 0;
-    const ageMs      = Date.now() - lastRunAt;
+    const lastRunAt = st.last_run_at ? new Date(st.last_run_at).getTime() : 0;
+    const ageMs     = Date.now() - lastRunAt;
     if (ageMs > MAX_RUN_AGE_MS) {
       console.warn('[Indexer] Stale is_running detected — auto-resetting');
       await db.from('indexer_state').update({ is_running: false, updated_at: now }).eq('id', 'lock_events');
@@ -240,7 +236,7 @@ export async function GET(req: NextRequest) {
             db.from('drizzlets').insert({
               wallet_address: e.account, source: 'unlock',
               amount: drizzlets, reference_id: e.txDigest, earned_at: unlockedAt,
-            }).then(r => { if (r.error) throw new Error(r.error.message); return r; }),
+            }).then(r => { if (r.error && !r.error.message.includes('duplicate')) throw new Error(r.error.message); return r; }),
             'ika-unlock-drizzlets'
           );
           count++;
@@ -512,4 +508,16 @@ async function rebuildAggregates(db: ReturnType<typeof getDB>, now: string) {
       id: 'main', total_ika_staked: totalIka, total_isui_staked: totalISUI,
       total_locked_nfts:         activeLocks?.length  || 0,
       total_unlocked_nfts:       inactiveLocks?.length || 0,
-      total_staking_nfts:        (activeLocks?.length || 0) + (
+      total_staking_nfts:        (activeLocks?.length || 0) + (inactiveLocks?.length || 0),
+      unique_staking_wallets:    Object.keys(wmap).length,
+      total_drizzlets_earned:    forecast.current,
+      forecast_drizzlets_30d:    forecast.day30,
+      forecast_drizzlets_60d:    forecast.day60,
+      forecast_drizzlets_season: forecast.season_end,
+      last_indexed_at: now, updated_at: now,
+    },
+    { onConflict: 'id' }
+  );
+
+  console.log(`[Agg] IKA:${totalIka.toFixed(0)} iSUI:${totalISUI.toFixed(0)} Drz:${totalDrizzlets.toLocaleString()} Wallets:${Object.keys(wmap).length}`);
+}
