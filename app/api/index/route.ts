@@ -24,8 +24,8 @@ import { LockDuration } from '@/lib/types';
 const BATCH_SIZE      = 50;
 const RATE_LIMIT_WAIT = 1500;
 const MAX_RETRIES     = 3;
-const TIME_BUDGET_MS  = 40_000; // bumped from 40k — safe now that aggregates skip during catchup
-const MAX_RUN_AGE_MS  = 30 * 60 * 1000;
+const TIME_BUDGET_MS  = 40_000;
+const MAX_RUN_AGE_MS  = 2 * 60 * 1000; // 2 minutes - fast auto-reset if stuck
 
 function getDB() {
   return createClient(
@@ -64,7 +64,9 @@ async function withRetry<T>(fn: () => Promise<T>, label: string): Promise<T> {
         await sleep(RATE_LIMIT_WAIT * attempt);
         continue;
       }
-      if (attempt === MAX_RETRIES) throw new Error(`[${label}] failed after ${MAX_RETRIES} attempts: ${msg}`);
+      if (attempt === MAX_RETRIES) {
+        throw new Error(`[${label}] failed after ${MAX_RETRIES} attempts: ${msg}`);
+      }
     }
   }
   throw new Error(`[${label}] unreachable`);
@@ -103,7 +105,7 @@ async function resetRunningState(db: ReturnType<typeof getDB>) {
   }).eq('id', 'lock_events');
 }
 
-// ─── RPC connectivity test ────────────────────────────────────────────────────
+// --- RPC connectivity test ----------------------------------------------------
 
 async function testRpcConnectivity(): Promise<{ ok: boolean; error?: string }> {
   try {
@@ -126,7 +128,7 @@ async function testRpcConnectivity(): Promise<{ ok: boolean; error?: string }> {
   }
 }
 
-// ─── Main handler ─────────────────────────────────────────────────────────────
+// --- Main handler -------------------------------------------------------------
 
 export async function GET(req: NextRequest) {
   if (!isAuthorized(req)) {
@@ -149,7 +151,7 @@ export async function GET(req: NextRequest) {
   }
   log.rpc_ok = true;
 
-  // Auto-reset stale is_running if last run was > 30 minutes ago
+  // Auto-reset stale is_running - 2 minute window so manual resets are rarely needed
   const { data: st } = await db
     .from('indexer_state').select('is_running, last_run_at').eq('id', 'lock_events').single();
 
@@ -157,8 +159,10 @@ export async function GET(req: NextRequest) {
     const lastRunAt = st.last_run_at ? new Date(st.last_run_at).getTime() : 0;
     const ageMs     = Date.now() - lastRunAt;
     if (ageMs > MAX_RUN_AGE_MS) {
-      console.warn('[Indexer] Stale is_running detected — auto-resetting');
-      await db.from('indexer_state').update({ is_running: false, updated_at: now }).eq('id', 'lock_events');
+      console.warn('[Indexer] Stale is_running detected - auto-resetting');
+      await db.from('indexer_state')
+        .update({ is_running: false, updated_at: now })
+        .eq('id', 'lock_events');
     } else {
       return NextResponse.json({ message: 'Already running' }, { status: 409 });
     }
@@ -175,10 +179,10 @@ export async function GET(req: NextRequest) {
         clearCheckpoint(db, 'isui_lock_events'),
         clearCheckpoint(db, 'isui_unlock_events'),
       ]);
-      console.log('[Indexer] Checkpoints cleared — full mode');
+      console.log('[Indexer] Checkpoints cleared - full mode');
     }
 
-    // ── 1. iSUI Locks ─────────────────────────────────────────────────────────
+    // -- 1. iSUI Locks ---------------------------------------------------------
     const isuiLockResult = await processStream(
       db, now, startMs, 'isui_lock_events',
       (cursor) => fetchISUILockEvents(cursor),
@@ -188,7 +192,9 @@ export async function GET(req: NextRequest) {
 
         const wallets = uniqueWallets.map((e: any) => ({
           address:        e.account,
-          last_active_at: e.timestampMs ? new Date(parseInt(e.timestampMs)).toISOString() : now,
+          last_active_at: e.timestampMs
+            ? new Date(parseInt(e.timestampMs)).toISOString()
+            : now,
         }));
         for (const b of chunk(wallets, BATCH_SIZE)) {
           await withRetry(async () =>
@@ -223,7 +229,7 @@ export async function GET(req: NextRequest) {
     );
     log.isui_locks = isuiLockResult;
 
-    // ── 2. iSUI Unlocks ───────────────────────────────────────────────────────
+    // -- 2. iSUI Unlocks -------------------------------------------------------
     const isuiUnlockResult = await processStream(
       db, now, startMs, 'isui_unlock_events',
       (cursor) => fetchISUIUnlockEvents(cursor),
@@ -268,7 +274,7 @@ export async function GET(req: NextRequest) {
     );
     log.isui_unlocks = isuiUnlockResult;
 
-    // ── 3. IKA Locks (already complete — skips instantly) ─────────────────────
+    // -- 3. IKA Locks (already complete - skips instantly) ---------------------
     const ikaLockResult = await processStream(
       db, now, startMs, 'lock_events',
       (cursor) => fetchLockStakeEvents(cursor),
@@ -278,7 +284,9 @@ export async function GET(req: NextRequest) {
 
         const wallets = uniqueWallets.map((e: any) => ({
           address:        e.account,
-          last_active_at: e.timestampMs ? new Date(parseInt(e.timestampMs)).toISOString() : now,
+          last_active_at: e.timestampMs
+            ? new Date(parseInt(e.timestampMs)).toISOString()
+            : now,
         }));
         for (const b of chunk(wallets, BATCH_SIZE)) {
           await withRetry(async () =>
@@ -313,7 +321,7 @@ export async function GET(req: NextRequest) {
     );
     log.ika_locks = ikaLockResult;
 
-    // ── 4. IKA Unlocks (resumes from saved checkpoint) ────────────────────────
+    // -- 4. IKA Unlocks (resumes from saved checkpoint) ------------------------
     const ikaUnlockResult = await processStream(
       db, now, startMs, 'unlock_events',
       (cursor) => fetchUnlockEvents(cursor),
@@ -358,14 +366,23 @@ export async function GET(req: NextRequest) {
     );
     log.ika_unlocks = ikaUnlockResult;
 
-    // ── 5. Riddle Pool ────────────────────────────────────────────────────────
+    // -- 5. Riddle Pool --------------------------------------------------------
     try {
       const pool = await fetchRiddlePool();
       if (pool) {
         await Promise.all([
-          db.from('riddle_pools').upsert({ pool_index: 1, amount: pool.pool1, raw_amount: String(pool.pool1), fetched_at: now }, { onConflict: 'pool_index' }),
-          db.from('riddle_pools').upsert({ pool_index: 2, amount: pool.pool2, raw_amount: String(pool.pool2), fetched_at: now }, { onConflict: 'pool_index' }),
-          db.from('riddle_pools').upsert({ pool_index: 3, amount: pool.pool3, raw_amount: String(pool.pool3), fetched_at: now }, { onConflict: 'pool_index' }),
+          db.from('riddle_pools').upsert(
+            { pool_index: 1, amount: pool.pool1, raw_amount: String(pool.pool1), fetched_at: now },
+            { onConflict: 'pool_index' }
+          ),
+          db.from('riddle_pools').upsert(
+            { pool_index: 2, amount: pool.pool2, raw_amount: String(pool.pool2), fetched_at: now },
+            { onConflict: 'pool_index' }
+          ),
+          db.from('riddle_pools').upsert(
+            { pool_index: 3, amount: pool.pool3, raw_amount: String(pool.pool3), fetched_at: now },
+            { onConflict: 'pool_index' }
+          ),
         ]);
         log.riddle_pools = pool;
       }
@@ -389,10 +406,10 @@ export async function GET(req: NextRequest) {
     await writeRefreshLog(db, mode, 'success', log);
     console.log('[Indexer] Done:', JSON.stringify(log));
 
-    // Reset BEFORE aggregates — must happen before Vercel 60s kill
+    // Reset BEFORE aggregates - ensures Vercel can't kill before is_running is cleared
     await resetRunningState(db);
 
-    // Only rebuild aggregates when fully caught up — skipping saves 10-15s during catchup
+    // Only rebuild aggregates when fully caught up - skips 10-15s during catchup
     if (!hasMore) {
       await rebuildAggregates(db, now);
     }
@@ -409,10 +426,14 @@ export async function GET(req: NextRequest) {
   }
 }
 
-// ─── processStream ────────────────────────────────────────────────────────────
+// --- processStream ------------------------------------------------------------
 
 type StreamResult = { count: number; pages: number; hasMore: boolean; error?: string };
-type AnyPage      = { data: unknown[]; nextCursor: { txDigest: string; eventSeq: string } | null; hasNextPage: boolean };
+type AnyPage = {
+  data: unknown[];
+  nextCursor: { txDigest: string; eventSeq: string } | null;
+  hasNextPage: boolean;
+};
 
 async function processStream(
   db: ReturnType<typeof getDB>,
@@ -447,20 +468,15 @@ async function processStream(
       totalCount += count;
       totalPages += 1;
 
-      // Fix: only advance checkpoint when data was actually written
-      if (count > 0 && page.nextCursor) {
+      // Always save checkpoint when there's a next cursor regardless of count.
+      // Dedup at DB level (onConflict) handles duplicates safely.
+      if (page.nextCursor) {
         await saveCheckpoint(db, streamKey, page.nextCursor.txDigest, page.nextCursor.eventSeq);
         cursor = page.nextCursor;
       }
 
       if (!page.hasNextPage) {
         return { count: totalCount, pages: totalPages, hasMore: false };
-      }
-
-      // If nothing was written but there are more pages, still advance cursor
-      // to avoid infinite loop on deduplicated pages
-      if (count === 0 && page.nextCursor) {
-        cursor = page.nextCursor;
       }
     }
   } catch (err) {
@@ -470,10 +486,12 @@ async function processStream(
   }
 }
 
-// ─── Aggregate Builder ────────────────────────────────────────────────────────
+// --- Aggregate Builder --------------------------------------------------------
 
 async function rebuildAggregates(db: ReturnType<typeof getDB>, now: string) {
-  const { data: activeLocks }   = await db.from('locks').select('wallet_address,asset_type,lock_duration,ika_amount,isui_amount,locked_at').eq('is_active', true);
+  const { data: activeLocks }   = await db.from('locks')
+    .select('wallet_address,asset_type,lock_duration,ika_amount,isui_amount,locked_at')
+    .eq('is_active', true);
   const { data: inactiveLocks } = await db.from('locks').select('id').eq('is_active', false);
   const { data: histDrz }       = await db.from('drizzlets').select('wallet_address,amount,source');
 
@@ -483,7 +501,9 @@ async function rebuildAggregates(db: ReturnType<typeof getDB>, now: string) {
 
   type W = { ika: number; isui: number; drizzlets: number; locks: number };
   const wmap: Record<string, W> = {};
-  const ensure = (a: string) => { if (!wmap[a]) wmap[a] = { ika: 0, isui: 0, drizzlets: 0, locks: 0 }; };
+  const ensure = (a: string) => {
+    if (!wmap[a]) wmap[a] = { ika: 0, isui: 0, drizzlets: 0, locks: 0 };
+  };
 
   for (const lock of activeLocks || []) {
     const days = Math.floor((ts - new Date(lock.locked_at).getTime()) / 86400000);
@@ -516,8 +536,12 @@ async function rebuildAggregates(db: ReturnType<typeof getDB>, now: string) {
   }
 
   const walletRows = Object.entries(wmap).map(([addr, s]) => ({
-    address: addr, ika_locked: s.ika, isui_locked: s.isui,
-    total_drizzlets: s.drizzlets, active_locks: s.locks, updated_at: now,
+    address:         addr,
+    ika_locked:      s.ika,
+    isui_locked:     s.isui,
+    total_drizzlets: s.drizzlets,
+    active_locks:    s.locks,
+    updated_at:      now,
   }));
   for (const b of chunk(walletRows, BATCH_SIZE)) {
     await withRetry(async () =>
@@ -528,20 +552,37 @@ async function rebuildAggregates(db: ReturnType<typeof getDB>, now: string) {
   }
 
   const dist = buildLockDistribution(
-    (activeLocks || []).filter(l => l.asset_type === 'ika').map(l => ({
-      lock_duration: Number(l.lock_duration) as LockDuration,
-      ika_amount:    Number(l.ika_amount),
-    }))
+    (activeLocks || [])
+      .filter(l => l.asset_type === 'ika')
+      .map(l => ({
+        lock_duration: Number(l.lock_duration) as LockDuration,
+        ika_amount:    Number(l.ika_amount),
+      }))
   );
   for (const item of dist) {
     await db.from('lock_distribution_cache').upsert(
-      { duration: item.duration, label: item.label, percentage: item.percentage, total_nfts: item.total_nfts, total_ika: item.total_ika, rate: item.rate, updated_at: now },
+      {
+        duration:   item.duration,
+        label:      item.label,
+        percentage: item.percentage,
+        total_nfts: item.total_nfts,
+        total_ika:  item.total_ika,
+        rate:       item.rate,
+        updated_at: now,
+      },
       { onConflict: 'duration' }
     );
   }
 
   await db.from('drizzlet_distribution_cache').upsert(
-    { id: 'main', locked_ika_rewards: totalActiveDrz, isui_rewards: isuiDrz, unlocked_drizzlets: unlockedDrz, riddle_rewards: riddleDrz, updated_at: now },
+    {
+      id:                  'main',
+      locked_ika_rewards:  totalActiveDrz,
+      isui_rewards:        isuiDrz,
+      unlocked_drizzlets:  unlockedDrz,
+      riddle_rewards:      riddleDrz,
+      updated_at:          now,
+    },
     { onConflict: 'id' }
   );
 
@@ -550,8 +591,10 @@ async function rebuildAggregates(db: ReturnType<typeof getDB>, now: string) {
 
   await db.from('dashboard_cache').upsert(
     {
-      id: 'main', total_ika_staked: totalIka, total_isui_staked: totalISUI,
-      total_locked_nfts:         activeLocks?.length  || 0,
+      id:                       'main',
+      total_ika_staked:          totalIka,
+      total_isui_staked:         totalISUI,
+      total_locked_nfts:         activeLocks?.length   || 0,
       total_unlocked_nfts:       inactiveLocks?.length || 0,
       total_staking_nfts:        (activeLocks?.length || 0) + (inactiveLocks?.length || 0),
       unique_staking_wallets:    Object.keys(wmap).length,
@@ -559,10 +602,14 @@ async function rebuildAggregates(db: ReturnType<typeof getDB>, now: string) {
       forecast_drizzlets_30d:    forecast.day30,
       forecast_drizzlets_60d:    forecast.day60,
       forecast_drizzlets_season: forecast.season_end,
-      last_indexed_at: now, updated_at: now,
+      last_indexed_at:           now,
+      updated_at:                now,
     },
     { onConflict: 'id' }
   );
 
-  console.log(`[Agg] IKA:${totalIka.toFixed(0)} iSUI:${totalISUI.toFixed(0)} Drz:${totalDrizzlets.toLocaleString()} Wallets:${Object.keys(wmap).length}`);
+  console.log(
+    `[Agg] IKA:${totalIka.toFixed(0)} iSUI:${totalISUI.toFixed(0)} ` +
+    `Drz:${totalDrizzlets.toLocaleString()} Wallets:${Object.keys(wmap).length}`
+  );
 }
