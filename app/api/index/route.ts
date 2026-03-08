@@ -95,6 +95,14 @@ function errMsg(err: unknown): string {
   return String(err);
 }
 
+async function resetRunningState(db: ReturnType<typeof getDB>) {
+  await db.from('indexer_state').update({
+    is_running: false,
+    last_run_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  }).eq('id', 'lock_events');
+}
+
 // ─── RPC connectivity test ────────────────────────────────────────────────────
 
 async function testRpcConnectivity(): Promise<{ ok: boolean; error?: string }> {
@@ -170,7 +178,7 @@ export async function GET(req: NextRequest) {
       console.log('[Indexer] Checkpoints cleared — full mode');
     }
 
-    // ── 1. iSUI Locks (first — gets full time budget) ─────────────────────────
+    // ── 1. iSUI Locks ─────────────────────────────────────────────────────────
     const isuiLockResult = await processStream(
       db, now, startMs, 'isui_lock_events',
       (cursor) => fetchISUILockEvents(cursor),
@@ -383,6 +391,9 @@ export async function GET(req: NextRequest) {
 
     await writeRefreshLog(db, mode, 'success', log);
     console.log('[Indexer] Done:', JSON.stringify(log));
+
+    // Reset before returning — never use finally so Vercel can't kill it before reset
+    await resetRunningState(db);
     return NextResponse.json({ success: true, has_more: hasMore, ...log });
 
   } catch (err) {
@@ -390,12 +401,10 @@ export async function GET(req: NextRequest) {
     console.error('[Indexer] FATAL:', msg);
     log.error = msg;
     await writeRefreshLog(db, mode, 'error', log);
-    return NextResponse.json({ success: false, error: msg }, { status: 500 });
 
-  } finally {
-    await db.from('indexer_state').update({
-      is_running: false, last_run_at: new Date().toISOString(), updated_at: new Date().toISOString(),
-    }).eq('id', 'lock_events');
+    // Reset before returning — never use finally so Vercel can't kill it before reset
+    await resetRunningState(db);
+    return NextResponse.json({ success: false, error: msg }, { status: 500 });
   }
 }
 
