@@ -220,28 +220,46 @@ export async function GET(req: NextRequest) {
       db, now, startMs, 'unlock_events',
       (cursor) => fetchUnlockEvents(cursor),
       async (page, db, now) => {
-        let count = 0;
-        for (const e of page.data as any[]) {
-          const unlockedAt = new Date(parseInt(e.unlock_time_ts)).toISOString();
-          const drizzlets  = Number(e.drizzlets_earned);
+        const events = dedupEvents(page.data as any[]);
+
+        // Batch update locks to inactive — filter by both wallet+state_time_ts for safety
+        for (const b of chunk(events, BATCH_SIZE)) {
+          for (const e of b) {
+            await withRetry(async () =>
+              db.from('locks')
+                .update({
+                  is_active:        false,
+                  unlocked_at:      new Date(parseInt(e.unlock_time_ts)).toISOString(),
+                  drizzlets_earned: Number(e.drizzlets_earned),
+                  updated_at:       now,
+                })
+                .eq('wallet_address', e.account)
+                .eq('state_time_ts',  e.state_time_ts)
+                .eq('asset_type',     'ika')
+                .eq('is_active',      true)
+                .then(r => { if (r.error) throw new Error(r.error.message); return r; }),
+              'ika-unlock-update'
+            );
+          }
+        }
+
+        // Batch insert drizzlets
+        const drizzletRows = events.map((e: any) => ({
+          wallet_address: e.account,
+          source:         'unlock',
+          amount:         Number(e.drizzlets_earned),
+          reference_id:   e.txDigest,
+          earned_at:      new Date(parseInt(e.unlock_time_ts)).toISOString(),
+        }));
+        for (const b of chunk(drizzletRows, BATCH_SIZE)) {
           await withRetry(async () =>
-            db.from('locks')
-              .update({ is_active: false, unlocked_at: unlockedAt, drizzlets_earned: drizzlets, updated_at: now })
-              .eq('wallet_address', e.account).eq('state_time_ts', e.state_time_ts)
-              .eq('asset_type', 'ika').eq('is_active', true)
+            db.from('drizzlets').upsert(b, { onConflict: 'wallet_address,reference_id' })
               .then(r => { if (r.error) throw new Error(r.error.message); return r; }),
-            'ika-unlock-update'
-          );
-          await withRetry(async () =>
-            db.from('drizzlets').insert({
-              wallet_address: e.account, source: 'unlock',
-              amount: drizzlets, reference_id: e.txDigest, earned_at: unlockedAt,
-            }).then(r => { if (r.error && !r.error.message.includes('duplicate')) throw new Error(r.error.message); return r; }),
             'ika-unlock-drizzlets'
           );
-          count++;
         }
-        return count;
+
+        return events.length;
       }
     );
     log.ika_unlocks = ikaUnlockResult;
@@ -296,28 +314,46 @@ export async function GET(req: NextRequest) {
       db, now, startMs, 'isui_unlock_events',
       (cursor) => fetchISUIUnlockEvents(cursor),
       async (page, db, now) => {
-        let count = 0;
-        for (const e of page.data as any[]) {
-          const unlockedAt = new Date(parseInt(e.unlock_time_ts)).toISOString();
-          const drizzlets  = Number(e.drizzlets_earned);
+        const events = dedupEvents(page.data as any[]);
+
+        // Batch update locks to inactive — filter by both wallet+state_time_ts for safety
+        for (const b of chunk(events, BATCH_SIZE)) {
+          for (const e of b) {
+            await withRetry(async () =>
+              db.from('locks')
+                .update({
+                  is_active:        false,
+                  unlocked_at:      new Date(parseInt(e.unlock_time_ts)).toISOString(),
+                  drizzlets_earned: Number(e.drizzlets_earned),
+                  updated_at:       now,
+                })
+                .eq('wallet_address', e.account)
+                .eq('state_time_ts',  e.state_time_ts)
+                .eq('asset_type',     'isui')
+                .eq('is_active',      true)
+                .then(r => { if (r.error) throw new Error(r.error.message); return r; }),
+              'isui-unlock-update'
+            );
+          }
+        }
+
+        // Batch insert drizzlets
+        const drizzletRows = events.map((e: any) => ({
+          wallet_address: e.account,
+          source:         'isui_lock',
+          amount:         Number(e.drizzlets_earned),
+          reference_id:   e.txDigest,
+          earned_at:      new Date(parseInt(e.unlock_time_ts)).toISOString(),
+        }));
+        for (const b of chunk(drizzletRows, BATCH_SIZE)) {
           await withRetry(async () =>
-            db.from('locks')
-              .update({ is_active: false, unlocked_at: unlockedAt, drizzlets_earned: drizzlets, updated_at: now })
-              .eq('wallet_address', e.account).eq('state_time_ts', e.state_time_ts)
-              .eq('asset_type', 'isui').eq('is_active', true)
+            db.from('drizzlets').upsert(b, { onConflict: 'wallet_address,reference_id' })
               .then(r => { if (r.error) throw new Error(r.error.message); return r; }),
-            'isui-unlock-update'
-          );
-          await withRetry(async () =>
-            db.from('drizzlets').insert({
-              wallet_address: e.account, source: 'isui_lock',
-              amount: drizzlets, reference_id: e.txDigest, earned_at: unlockedAt,
-            }).then(r => { if (r.error && !r.error.message.includes('duplicate')) throw new Error(r.error.message); return r; }),
             'isui-unlock-drizzlets'
           );
-          count++;
         }
-        return count;
+
+        return events.length;
       }
     );
     log.isui_unlocks = isuiUnlockResult;
