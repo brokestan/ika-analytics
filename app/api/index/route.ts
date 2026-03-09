@@ -498,11 +498,46 @@ async function processStream(
 // ---- Aggregate Builder ------------------------------------------------------
 
 async function rebuildAggregates(db: ReturnType<typeof getDB>, now: string) {
-  const { data: activeLocks }   = await db.from('locks')
+  // Paginate active locks
+const activeLocks: any[] = [];
+let activePage = 0;
+while (true) {
+  const { data } = await db.from('locks')
     .select('wallet_address,asset_type,lock_duration,ika_amount,isui_amount,locked_at')
-    .eq('is_active', true);
-  const { data: inactiveLocks } = await db.from('locks').select('id').eq('is_active', false);
-  const { data: histDrz }       = await db.from('drizzlets').select('wallet_address,amount,source');
+    .eq('is_active', true)
+    .range(activePage * 1000, activePage * 1000 + 999);
+  if (!data || data.length === 0) break;
+  activeLocks.push(...data);
+  if (data.length < 1000) break;
+  activePage++;
+}
+
+// Paginate inactive locks
+const inactiveLocks: any[] = [];
+let inactivePage = 0;
+while (true) {
+  const { data } = await db.from('locks')
+    .select('id')
+    .eq('is_active', false)
+    .range(inactivePage * 1000, inactivePage * 1000 + 999);
+  if (!data || data.length === 0) break;
+  inactiveLocks.push(...data);
+  if (data.length < 1000) break;
+  inactivePage++;
+}
+
+// Paginate drizzlets
+const histDrz: any[] = [];
+let drzPage = 0;
+while (true) {
+  const { data } = await db.from('drizzlets')
+    .select('wallet_address,amount,source')
+    .range(drzPage * 1000, drzPage * 1000 + 999);
+  if (!data || data.length === 0) break;
+  histDrz.push(...data);
+  if (data.length < 1000) break;
+  drzPage++;
+}
 
   const ts = Date.now();
   let totalIka = 0, totalISUI = 0, totalActiveDrz = 0;
