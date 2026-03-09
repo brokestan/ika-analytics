@@ -83,8 +83,9 @@ export async function GET(req: NextRequest) {
     .select('tx_digest')
     .eq('asset_type', 'ika')
     .eq('lock_duration', 0)
-    .order('tx_digest'); // stable ordering for resumability
-
+    .order('tx_digest') // stable ordering for resumability
+    .limit(10000);
+  
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
