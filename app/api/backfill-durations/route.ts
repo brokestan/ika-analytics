@@ -98,15 +98,11 @@ while (true) {
   from += PAGE;
 }
   
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
-  }
-
-  if (!locks || locks.length === 0) {
+  if (allLocks.length === 0) {
     return NextResponse.json({ success: true, message: 'All lock durations already backfilled', updated: 0 });
   }
 
-  const allDigests = locks.map(l => l.tx_digest);
+  const allDigests = allLocks.map(l => l.tx_digest);
   const batches    = chunk(allDigests, BATCH_SIZE);
 
   console.log(`[Backfill] ${allDigests.length} locks to process in ${batches.length} batches`);
