@@ -78,13 +78,25 @@ export async function GET(req: NextRequest) {
   const startMs = Date.now();
 
   // Fetch all IKA locks that still have lock_duration = 0
-  const { data: locks, error } = await db
+  let allLocks: { tx_digest: string }[] = [];
+let from = 0;
+const PAGE = 1000;
+
+while (true) {
+  const { data, error } = await db
     .from('locks')
     .select('tx_digest')
     .eq('asset_type', 'ika')
     .eq('lock_duration', 0)
-    .order('tx_digest') // stable ordering for resumability
-    .limit(10000);
+    .order('tx_digest')
+    .range(from, from + PAGE - 1);
+
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  if (!data || data.length === 0) break;
+  allLocks = allLocks.concat(data);
+  if (data.length < PAGE) break;
+  from += PAGE;
+}
   
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
