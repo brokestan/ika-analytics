@@ -173,6 +173,27 @@ export async function fetchDurationsForBatch(
   return map;
 }
 
+const NFT_RARITY_BASE: Record<string, number> = {
+  Common: 1500,
+  Rare: 2000,
+  Epic: 4000,
+  Legendary: 7500,
+  Mythic: 20000,
+};
+
+export function calcNftDrizzlets(rarity: string, level: number): number {
+  const base = NFT_RARITY_BASE[rarity] ?? 1500;
+  return base + level * 100;
+}
+
+export async function fetchNftRevealEvents(cursor: string | null, limit = 50) {
+  return fetchEvents(
+    '0x0b490b62d277395afdc9b5349f93660e8672be6de9e83dca6381d300eb892e7a::ink_sack_tasks::UnstakeIkaChanNFTEvent',
+    cursor,
+    limit
+  );
+}
+
 export async function fetchLockStakeEvents(
   cursor: EventCursor | null = null
 ): Promise<EventPage<LockEventFlat>> {
