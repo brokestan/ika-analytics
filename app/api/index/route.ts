@@ -18,6 +18,8 @@ import {
   getDrizzletRate,
   calcIkaDrizzlets,
   calcISUIDrizzlets,
+  fetchNftRevealEvents,
+  calcNftDrizzlets,
 } from '@/lib/sui-rpc';
 import { buildLockDistribution, forecastDrizzlets } from '@/lib/calculations';
 import { LockDuration } from '@/lib/types';
@@ -181,6 +183,7 @@ export async function GET(req: NextRequest) {
         clearCheckpoint(db, 'unlock_events'),
         clearCheckpoint(db, 'isui_lock_events'),
         clearCheckpoint(db, 'isui_unlock_events'),
+        clearCheckpoint(db, 'nft_reveal_events'),
       ]);
       console.log('[Indexer] Checkpoints cleared - full mode');
     }
@@ -372,7 +375,55 @@ export async function GET(req: NextRequest) {
     );
     log.ika_unlocks = ikaUnlockResult;
 
-    // -- 5. Riddle Pool -------------------------------------------------------
+    // -- 5. NFT Reveals -------------------------------------------------------
+    const nftRevealResult = await processStream(
+      db, now, startMs, 'nft_reveal_events',
+      (cursor) => fetchNftRevealEvents(cursor),
+      async (page, db, now) => {
+        const events = dedupEvents(page.data as any[]);
+        if (events.length === 0) return 0;
+
+        const rows = events.map((e: any) => ({
+          wallet_address:   e.parsedJson.account,
+          tx_digest:        e.txDigest,
+          nft_id:           e.parsedJson.ika_chan_nft_id,
+          level:            Number(e.parsedJson.level),
+          rarity:           e.parsedJson.rarity,
+          drizzlets_earned: calcNftDrizzlets(e.parsedJson.rarity, Number(e.parsedJson.level)),
+          revealed_at:      e.timestampMs
+            ? new Date(Number(e.timestampMs)).toISOString()
+            : now,
+        }));
+
+        for (const b of chunk(rows, BATCH_SIZE)) {
+          await withRetry(async () =>
+            db.from('nft_reveals').upsert(b, { onConflict: 'tx_digest,nft_id', ignoreDuplicates: true })
+              .then(r => { if (r.error) throw new Error(r.error.message); return r; }),
+            'nft-reveal-upsert'
+          );
+        }
+
+        const drzRows = rows.map((r: any) => ({
+          wallet_address: r.wallet_address,
+          source:         'nft_reveal',
+          amount:         r.drizzlets_earned,
+          reference_id:   r.tx_digest,
+          earned_at:      r.revealed_at,
+        }));
+        for (const b of chunk(drzRows, BATCH_SIZE)) {
+          await withRetry(async () =>
+            db.from('drizzlets').upsert(b, { onConflict: 'wallet_address,reference_id', ignoreDuplicates: true })
+              .then(r => { if (r.error) throw new Error(r.error.message); return r; }),
+            'nft-reveal-drizzlets'
+          );
+        }
+
+        return rows.length;
+      }
+    );
+    log.nft_reveals = nftRevealResult;
+
+    // -- 6. Riddle Pool -------------------------------------------------------
     try {
       const pool = await fetchRiddlePool();
       if (pool) {
@@ -402,7 +453,8 @@ export async function GET(req: NextRequest) {
       (ikaLockResult    as StreamResult).hasMore ||
       (ikaUnlockResult  as StreamResult).hasMore ||
       (isuiLockResult   as StreamResult).hasMore ||
-      (isuiUnlockResult as StreamResult).hasMore;
+      (isuiUnlockResult as StreamResult).hasMore ||
+      (nftRevealResult  as StreamResult).hasMore;
 
     log.has_more     = hasMore;
     log.elapsed_ms   = Date.now() - startMs;
