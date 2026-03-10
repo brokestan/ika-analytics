@@ -192,7 +192,7 @@ export async function fetchNftRevealEvents(
 ) {
   return fetchEvents(
     '0x0b490b62d277395afdc9b5349f93660e8672be6de9e83dca6381d300eb892e7a::ink_sack_tasks::UnstakeIkaChanNFTEvent',
-    cursor,
+    cursor ? cursor.txDigest : null,
     limit
   );
 }
