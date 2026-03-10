@@ -186,12 +186,38 @@ export function calcNftDrizzlets(rarity: string, level: number): number {
   return base + level * 100;
 }
 
-export async function fetchNftRevealEvents(cursor: string | null, limit = 50) {
-  return fetchEvents(
-    '0x0b490b62d277395afdc9b5349f93660e8672be6de9e83dca6381d300eb892e7a::ink_sack_tasks::UnstakeIkaChanNFTEvent',
-    cursor,
-    limit
-  );
+export async function fetchNftRevealEvents(
+  cursor: EventCursor | null = null
+): Promise<EventPage<any>> {
+  try {
+    const result = await rpcCall<{
+      data: Array<{
+        id: { txDigest: string; eventSeq: string };
+        parsedJson: any;
+        timestampMs: string;
+      }>;
+      nextCursor: EventCursor | null;
+      hasNextPage: boolean;
+    }>('suix_queryEvents', [
+      { MoveEventType: '0x0b490b62d277395afdc9b5349f93660e8672be6de9e83dca6381d300eb892e7a::ink_sack_tasks::UnstakeIkaChanNFTEvent' },
+      cursor,
+      50,
+      false,
+    ]);
+    return {
+      data: result.data.map((e) => ({
+        txDigest:    e.id.txDigest,
+        timestampMs: e.timestampMs,
+        parsedJson:  e.parsedJson,
+        eventSeq:    e.id.eventSeq,
+      })),
+      nextCursor:  result.nextCursor,
+      hasNextPage: result.hasNextPage,
+    };
+  } catch (err) {
+    console.error('[fetchNftRevealEvents]', err);
+    throw err;
+  }
 }
 
 export async function fetchLockStakeEvents(
