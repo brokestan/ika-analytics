@@ -12,6 +12,7 @@ import {
   fetchISUILockEvents,
   fetchISUIUnlockEvents,
   fetchRiddlePool,
+  fetchDurationsForBatch,
   toHumanIka,
   toHumanISUI,
   getDrizzletRate,
@@ -298,11 +299,14 @@ export async function GET(req: NextRequest) {
           );
         }
 
+        const digests = uniqueEvents.map((e: any) => e.txDigest);
+        const durations = await fetchDurationsForBatch(digests);
+
         const rows = uniqueEvents.map((e: any) => ({
           wallet_address: e.account,
           tx_digest:      e.txDigest,
           asset_type:     'ika',
-          lock_duration:  0,
+          lock_duration:  durations[e.txDigest] ?? 0,
           ika_amount:     toHumanIka(e.staked_ika_balance),
           isui_amount:    0,
           locked_at:      e.state_time_ts
@@ -631,7 +635,14 @@ while (true) {
   );
 
   const totalDrizzlets = totalActiveDrz + unlockedDrz + isuiDrz + riddleDrz;
-  const forecast = forecastDrizzlets(totalDrizzlets, totalIka, totalISUI, 3, 60);
+  const weightedRate = totalIka > 0
+    ? (activeLocks || [])
+        .filter(l => l.asset_type === 'ika')
+        .reduce((sum: number, l: any) => sum + getDrizzletRate(Number(l.lock_duration)) * Number(l.ika_amount), 0)
+      / totalIka
+    : 3;
+
+  const forecast = forecastDrizzlets(totalDrizzlets, totalIka, totalISUI, weightedRate, 60);
 
   await db.from('dashboard_cache').upsert(
     {
