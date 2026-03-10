@@ -186,13 +186,10 @@ export function calcNftDrizzlets(rarity: string, level: number): number {
   return base + level * 100;
 }
 
-export async function fetchNftRevealEvents(
-  cursor: { txDigest: string; eventSeq: string } | null,
-  limit = 50
-) {
+export async function fetchNftRevealEvents(cursor: string | null, limit = 50) {
   return fetchEvents(
     '0x0b490b62d277395afdc9b5349f93660e8672be6de9e83dca6381d300eb892e7a::ink_sack_tasks::UnstakeIkaChanNFTEvent',
-    cursor ? cursor.txDigest : null,
+    cursor,
     limit
   );
 }
