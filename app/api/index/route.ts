@@ -20,6 +20,7 @@ import {
   calcISUIDrizzlets,
   fetchNftRevealEvents,
   calcNftDrizzlets,
+  fetchMfSquidMaidenMintEvents,
 } from '@/lib/sui-rpc';
 import { buildLockDistribution, forecastDrizzlets } from '@/lib/calculations';
 import { LockDuration } from '@/lib/types';
@@ -184,6 +185,7 @@ export async function GET(req: NextRequest) {
         clearCheckpoint(db, 'isui_lock_events'),
         clearCheckpoint(db, 'isui_unlock_events'),
         clearCheckpoint(db, 'nft_reveal_events'),
+        clearCheckpoint(db, 'mfsm_events'),
       ]);
       console.log('[Indexer] Checkpoints cleared - full mode');
     }
@@ -423,7 +425,37 @@ export async function GET(req: NextRequest) {
     );
     log.nft_reveals = nftRevealResult;
 
-    // -- 6. Riddle Pool -------------------------------------------------------
+    // -- 6. MF Squid Maiden Mints --------------------------------------------
+    const mfsmResult = await processStream(
+      db, now, startMs, 'mfsm_events',
+      (cursor) => fetchMfSquidMaidenMintEvents(cursor),
+      async (page, db, now) => {
+        const events = dedupEvents(page.data as any[]);
+        if (events.length === 0) return 0;
+
+        const rows = events.map((e: any) => ({
+          tx_digest:      e.txDigest,
+          wallet_address: e.wallet,
+          nft_id:         e.nft_id,
+          minted_at:      e.timestampMs
+            ? new Date(Number(e.timestampMs)).toISOString()
+            : now,
+        }));
+
+        for (const b of chunk(rows, BATCH_SIZE)) {
+          await withRetry(async () =>
+            db.from('mf_squid_maiden_mints')
+              .upsert(b, { onConflict: 'tx_digest', ignoreDuplicates: true })
+              .then(r => { if (r.error) throw new Error(r.error.message); return r; }),
+            'mfsm-upsert'
+          );
+        }
+        return rows.length;
+      }
+    );
+    log.mfsm_mints = mfsmResult;
+
+    // -- 7. Riddle Pool -------------------------------------------------------
     try {
       const pool = await fetchRiddlePool();
       if (pool) {
@@ -454,7 +486,8 @@ export async function GET(req: NextRequest) {
       (ikaUnlockResult  as StreamResult).hasMore ||
       (isuiLockResult   as StreamResult).hasMore ||
       (isuiUnlockResult as StreamResult).hasMore ||
-      (nftRevealResult  as StreamResult).hasMore;
+      (nftRevealResult  as StreamResult).hasMore ||
+      (mfsmResult       as StreamResult).hasMore;
 
     log.has_more     = hasMore;
     log.elapsed_ms   = Date.now() - startMs;
