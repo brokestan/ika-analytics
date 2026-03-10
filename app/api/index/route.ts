@@ -378,7 +378,7 @@ export async function GET(req: NextRequest) {
     // -- 5. NFT Reveals -------------------------------------------------------
     const nftRevealResult = await processStream(
       db, now, startMs, 'nft_reveal_events',
-      (cursor) => fetchNftRevealEvents(cursor),
+      (cursor) => fetchNftRevealEvents(cursor ? cursor.txDigest : null),
       async (page, db, now) => {
         const events = dedupEvents(page.data as any[]);
         if (events.length === 0) return 0;
