@@ -220,6 +220,42 @@ export async function fetchNftRevealEvents(
   }
 }
 
+export async function fetchMfSquidMaidenMintEvents(
+  cursor: EventCursor | null = null
+): Promise<EventPage<any>> {
+  try {
+    const result = await rpcCall<{
+      data: Array<{
+        id: { txDigest: string; eventSeq: string };
+        parsedJson: { id: string };
+        sender: string;
+        timestampMs: string;
+      }>;
+      nextCursor: EventCursor | null;
+      hasNextPage: boolean;
+    }>('suix_queryEvents', [
+      { MoveEventType: '0x3533437eabe66f05207aec78857efad86f42c2be84e2bbd63692c7c37fd349fb::mf_squid_maiden::MfSquidMaidenMinted' },
+      cursor,
+      50,
+      false,
+    ]);
+    return {
+      data: result.data.map((e) => ({
+        txDigest:    e.id.txDigest,
+        eventSeq:    e.id.eventSeq,
+        timestampMs: e.timestampMs,
+        wallet:      e.sender,
+        nft_id:      e.parsedJson.id,
+      })),
+      nextCursor:  result.nextCursor,
+      hasNextPage: result.hasNextPage,
+    };
+  } catch (err) {
+    console.error('[fetchMfSquidMaidenMintEvents]', err);
+    throw err;
+  }
+}
+
 export async function fetchLockStakeEvents(
   cursor: EventCursor | null = null
 ): Promise<EventPage<LockEventFlat>> {
