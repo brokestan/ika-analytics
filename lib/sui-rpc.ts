@@ -153,6 +153,26 @@ export async function fetchLockDurations(
 
 // ─── IKA Lock Events ──────────────────────────────────────────────────────────
 
+export async function fetchDurationsForBatch(
+  txDigests: string[]
+): Promise<Record<string, number>> {
+  if (txDigests.length === 0) return {};
+  const results = await rpcCall<Array<any | null>>(
+    'sui_multiGetTransactionBlocks',
+    [txDigests, { showInput: true, showEffects: false, showEvents: false }]
+  );
+  const map: Record<string, number> = {};
+  for (let i = 0; i < txDigests.length; i++) {
+    const inputs = results[i]?.transaction?.data?.transaction?.inputs as Array<{
+      type: string; valueType?: string; value?: string;
+    }> | undefined;
+    const pureInput = inputs?.find(i => i.type === 'pure' && i.valueType === 'u64');
+    const raw = parseInt(pureInput?.value ?? '0');
+    map[txDigests[i]] = raw === 1 ? 1 : raw === 7 ? 7 : raw === 30 ? 30 : 0;
+  }
+  return map;
+}
+
 export async function fetchLockStakeEvents(
   cursor: EventCursor | null = null
 ): Promise<EventPage<LockEventFlat>> {
