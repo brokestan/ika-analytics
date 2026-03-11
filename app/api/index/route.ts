@@ -19,6 +19,7 @@ import {
   calcIkaDrizzlets,
   calcISUIDrizzlets,
   fetchMfSquidMaidenMintEvents,
+  fetchTransactionEventsInBatch,
   fetchIkaChanNftObjects,
   calcNftDrizzlets,
 } from '@/lib/sui-rpc';
@@ -384,16 +385,25 @@ export async function GET(req: NextRequest) {
         const events = dedupEvents(page.data as any[]);
         if (events.length === 0) return 0;
 
-        const rows = events.map((e: any) => ({
-          tx_digest:      e.txDigest,
-          wallet_address: e.wallet,
-          nft_id:         e.nft_id,
-          minted_at:      e.timestampMs
+        // Step 1: fetch ika_chan_nft_id from each tx via NFTUpdated event
+        const txDigests = events.map((e: any) => e.txDigest);
+        const ikaChanMap = await fetchTransactionEventsInBatch(txDigests);
+
+        // Step 2: fetch NFT objects for level+rarity
+        const ikaChanIds = [...new Set(Object.values(ikaChanMap))];
+        const nftDataMap = await fetchIkaChanNftObjects(ikaChanIds);
+
+        // Step 3: save mf_squid_maiden_mints with ika_chan_nft_id
+        const mintRows = events.map((e: any) => ({
+          tx_digest:       e.txDigest,
+          wallet_address:  e.wallet,
+          nft_id:          e.nft_id,
+          ika_chan_nft_id: ikaChanMap[e.txDigest] ?? null,
+          minted_at:       e.timestampMs
             ? new Date(Number(e.timestampMs)).toISOString()
             : now,
         }));
-
-        for (const b of chunk(rows, BATCH_SIZE)) {
+        for (const b of chunk(mintRows, BATCH_SIZE)) {
           await withRetry(async () =>
             db.from('mf_squid_maiden_mints')
               .upsert(b, { onConflict: 'tx_digest', ignoreDuplicates: true })
@@ -401,11 +411,56 @@ export async function GET(req: NextRequest) {
             'mfsm-upsert'
           );
         }
-        return rows.length;
+
+        // Step 4: build and save nft_reveals rows for events with NFT data
+        const revealRows: any[] = [];
+        for (const e of events) {
+          const ikaChanNftId = ikaChanMap[e.txDigest];
+          if (!ikaChanNftId) continue;
+          const nftData = nftDataMap[ikaChanNftId];
+          if (!nftData) continue;
+          revealRows.push({
+            wallet_address:     e.wallet,
+            tx_digest:          e.txDigest,
+            nft_id:             ikaChanNftId,
+            mf_squid_maiden_id: e.nft_id,
+            level:              nftData.level,
+            rarity:             nftData.rarity,
+            drizzlets_earned:   calcNftDrizzlets(nftData.rarity, nftData.level),
+            revealed_at:        e.timestampMs
+              ? new Date(Number(e.timestampMs)).toISOString()
+              : now,
+          });
+        }
+
+        if (revealRows.length > 0) {
+          for (const b of chunk(revealRows, BATCH_SIZE)) {
+            await withRetry(async () =>
+              db.from('nft_reveals').upsert(b, { onConflict: 'tx_digest,nft_id', ignoreDuplicates: true })
+                .then(r => { if (r.error) throw new Error(r.error.message); return r; }),
+              'nft-reveals-upsert'
+            );
+          }
+          const drzRows = revealRows.map((r: any) => ({
+            wallet_address: r.wallet_address,
+            source:         'nft_reveal',
+            amount:         r.drizzlets_earned,
+            reference_id:   r.tx_digest,
+            earned_at:      r.revealed_at,
+          }));
+          for (const b of chunk(drzRows, BATCH_SIZE)) {
+            await withRetry(async () =>
+              db.from('drizzlets').upsert(b, { onConflict: 'wallet_address,reference_id', ignoreDuplicates: true })
+                .then(r => { if (r.error) throw new Error(r.error.message); return r; }),
+              'nft-reveal-drizzlets'
+            );
+          }
+        }
+
+        return events.length;
       }
     );
     log.mfsm_mints = mfsmResult;
-
     // -- 7. Riddle Pool -------------------------------------------------------
     try {
       const pool = await fetchRiddlePool();
