@@ -19,7 +19,6 @@ import {
   calcIkaDrizzlets,
   calcISUIDrizzlets,
   fetchNftRevealEvents,
-  calcNftDrizzlets,
   fetchMfSquidMaidenMintEvents,
 } from '@/lib/sui-rpc';
 import { buildLockDistribution, forecastDrizzlets } from '@/lib/calculations';
@@ -385,14 +384,26 @@ export async function GET(req: NextRequest) {
         const events = dedupEvents(page.data as any[]);
         if (events.length === 0) return 0;
 
+        // Get mf_squid_maiden_id for each tx from mf_squid_maiden_mints table
+        const txDigests = events.map((e: any) => e.txDigest);
+        const { data: maidenData } = await db
+          .from('mf_squid_maiden_mints')
+          .select('tx_digest, nft_id')
+          .in('tx_digest', txDigests);
+        const maidenMap: Record<string, string> = {};
+        for (const m of maidenData || []) {
+          maidenMap[m.tx_digest] = m.nft_id;
+        }
+
         const rows = events.map((e: any) => ({
-          wallet_address:   e.parsedJson.account,
-          tx_digest:        e.txDigest,
-          nft_id:           e.parsedJson.ika_chan_nft_id,
-          level:            Number(e.parsedJson.level),
-          rarity:           e.parsedJson.rarity,
-          drizzlets_earned: calcNftDrizzlets(e.parsedJson.rarity, Number(e.parsedJson.level)),
-          revealed_at:      e.timestampMs
+          wallet_address:      e.account,
+          tx_digest:           e.txDigest,
+          nft_id:              e.ika_chan_nft_id,
+          mf_squid_maiden_id:  maidenMap[e.txDigest] ?? null,
+          level:               Number(e.level),
+          rarity:              e.rarity,
+          drizzlets_earned:    Number(e.ink_droplets_earned) / 10,
+          revealed_at:         e.timestampMs
             ? new Date(Number(e.timestampMs)).toISOString()
             : now,
         }));
