@@ -193,23 +193,33 @@ export async function fetchNftRevealEvents(
     const result = await rpcCall<{
       data: Array<{
         id: { txDigest: string; eventSeq: string };
-        parsedJson: any;
+        parsedJson: {
+          account: string;
+          ika_chan_nft_id: string;
+          ink_droplets_earned: string;
+          level: number;
+          rarity: string;
+        };
         timestampMs: string;
       }>;
       nextCursor: EventCursor | null;
       hasNextPage: boolean;
     }>('suix_queryEvents', [
-      { MoveEventType: '0x0b490b62d277395afdc9b5349f93660e8672be6de9e83dca6381d300eb892e7a::ink_sack_tasks::UnstakeIkaChanNFTEvent' },
+      { MoveEventType: '0x0b490b62d277395afdc9b5349f93660e8672be6de9e83dca6381d300eb892e7a::ink_sack_tasks::StakeIkaChanNFTEarnedEvent' },
       cursor,
       50,
       false,
     ]);
     return {
       data: result.data.map((e) => ({
-        txDigest:    e.id.txDigest,
-        timestampMs: e.timestampMs,
-        parsedJson:  e.parsedJson,
-        eventSeq:    e.id.eventSeq,
+        txDigest:            e.id.txDigest,
+        eventSeq:            e.id.eventSeq,
+        timestampMs:         e.timestampMs,
+        account:             e.parsedJson.account,
+        ika_chan_nft_id:     e.parsedJson.ika_chan_nft_id,
+        ink_droplets_earned: e.parsedJson.ink_droplets_earned,
+        level:               e.parsedJson.level,
+        rarity:              e.parsedJson.rarity,
       })),
       nextCursor:  result.nextCursor,
       hasNextPage: result.hasNextPage,
