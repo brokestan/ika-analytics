@@ -266,6 +266,63 @@ export async function fetchMfSquidMaidenMintEvents(
   }
 }
 
+export async function fetchTransactionEventsInBatch(
+  txDigests: string[]
+): Promise<Record<string, string>> {
+  if (txDigests.length === 0) return {};
+  const results = await rpcCall<Array<{
+    events?: Array<{ type: string; parsedJson: { id?: string } }>;
+  } | null>>('sui_multiGetTransactionBlocks', [
+    txDigests,
+    { showEvents: true, showInput: false, showEffects: false },
+  ]);
+  const map: Record<string, string> = {};
+  for (let i = 0; i < txDigests.length; i++) {
+    const events = results[i]?.events ?? [];
+    const nftUpdated = events.find(e =>
+      e.type.includes('::ika_chan_updater::NFTUpdated')
+    );
+    if (nftUpdated?.parsedJson?.id) {
+      map[txDigests[i]] = nftUpdated.parsedJson.id;
+    }
+  }
+  return map;
+}
+
+export async function fetchIkaChanNftObjects(
+  objectIds: string[]
+): Promise<Record<string, { level: number; rarity: string }>> {
+  if (objectIds.length === 0) return {};
+  const results = await rpcCall<Array<{
+    data?: {
+      content?: {
+        fields?: {
+          metadata?: {
+            fields?: {
+              level?: number;
+              rarity?: string;
+            };
+          };
+        };
+      };
+    };
+  } | null>>('sui_multiGetObjects', [
+    objectIds,
+    { showContent: true },
+  ]);
+  const map: Record<string, { level: number; rarity: string }> = {};
+  for (let i = 0; i < objectIds.length; i++) {
+    const fields = results[i]?.data?.content?.fields?.metadata?.fields;
+    if (fields?.level !== undefined && fields?.rarity) {
+      map[objectIds[i]] = {
+        level:  Number(fields.level),
+        rarity: String(fields.rarity),
+      };
+    }
+  }
+  return map;
+}
+
 export async function fetchLockStakeEvents(
   cursor: EventCursor | null = null
 ): Promise<EventPage<LockEventFlat>> {
