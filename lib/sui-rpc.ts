@@ -18,6 +18,12 @@ const RIDDLE_POOL_OBJECT =
   process.env.RIDDLE_POOL_OBJECT_ID ||
   '0x92c105c5cf5713a751ee18e7a007fbb238ae242b7234cf1ee25be51974eef334';
 
+const V4_PKG =
+  process.env.IKA_V4_PACKAGE_ID ||
+  '0x765307507478ca630ddc0c44ab3bb9e83c3aa98aea2777a4f0aea0ade4a853f8';
+
+export const RIDDLE_DRIZZLETS_PER_SUBMISSION = 31;
+
 // Event type strings — exact names confirmed from package tx list
 const EVENT_IKA_LOCK    = `${PKG}::event_wrapper::Event<${PKG}::tasks::StakedIkaLocked>`;
 const EVENT_IKA_UNLOCK  = `${PKG}::event_wrapper::Event<${PKG}::tasks::StakedIkaUnlocked>`;
@@ -450,6 +456,76 @@ export async function fetchRiddlePool(): Promise<RiddlePoolFields | null> {
   } catch (err) {
     console.error('[fetchRiddlePool]', err);
     return null;
+  }
+}
+
+// ─── Riddle Submissions ───────────────────────────────────────────────────────
+
+export interface RiddleSubmissionFlat {
+  txDigest:       string;
+  timestampMs:    string;
+  wallet_address: string;
+  riddle_number:  number;
+}
+
+export async function fetchRiddleSubmissions(
+  cursor: EventCursor | null = null
+): Promise<EventPage<RiddleSubmissionFlat>> {
+  try {
+    const result = await rpcCall<{
+      data: Array<{
+        digest:      string;
+        timestampMs: string;
+        transaction: {
+          data: {
+            transaction: {
+              inputs: Array<{
+                type:       string;
+                valueType?: string;
+                value?:     string;
+              }>;
+            };
+            sender: string;
+          };
+        };
+      }>;
+      nextCursor:  string | null;
+      hasNextPage: boolean;
+    }>('suix_queryTransactionBlocks', [
+      {
+        filter: {
+          MoveFunction: {
+            package:  V4_PKG,
+            module:   'tasks',
+            function: 'submit_riddle_answer',
+          },
+        },
+        options: { showInput: true },
+      },
+      cursor ? cursor.txDigest : null,
+      50,
+      false,
+    ]);
+
+    const data: RiddleSubmissionFlat[] = result.data.map(tx => {
+      const inputs     = tx.transaction?.data?.transaction?.inputs ?? [];
+      const riddleNum  = inputs[1]?.value ? parseInt(inputs[1].value, 10) : 0;
+      return {
+        txDigest:       tx.digest,
+        timestampMs:    tx.timestampMs,
+        wallet_address: tx.transaction.data.sender,
+        riddle_number:  riddleNum,
+      };
+    });
+
+    const nextCursor: EventCursor | null = result.nextCursor
+      ? { txDigest: result.nextCursor, eventSeq: '0' }
+      : null;
+
+    return { data, nextCursor, hasNextPage: result.hasNextPage };
+  } catch (err) {
+    console.error('[fetchRiddleSubmissions]', err);
+    return { data: [], nextCursor: null, hasNextPage: false };
   }
 }
 
