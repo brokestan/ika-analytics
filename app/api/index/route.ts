@@ -18,6 +18,7 @@ import {
   getDrizzletRate,
   calcIkaDrizzlets,
   calcISUIDrizzlets,
+  RIDDLE_DRIZZLETS_PER_SUBMISSION,
   fetchMfSquidMaidenMintEvents,
   fetchTransactionEventsInBatch,
   fetchIkaChanNftObjects,
@@ -186,6 +187,7 @@ export async function GET(req: NextRequest) {
         clearCheckpoint(db, 'isui_lock_events'),
         clearCheckpoint(db, 'isui_unlock_events'),
         clearCheckpoint(db, 'mfsm_events'),
+        clearCheckpoint(db, 'riddle_submission_txs'),
       ]);
       console.log('[Indexer] Checkpoints cleared - full mode');
     }
@@ -461,7 +463,7 @@ export async function GET(req: NextRequest) {
       }
     );
     log.mfsm_mints = mfsmResult;
-    // -- 7. Riddle Pool -------------------------------------------------------
+    // -- 6. Riddle Pool -------------------------------------------------------
     try {
       const pool = await fetchRiddlePool();
       if (pool) {
@@ -487,12 +489,78 @@ export async function GET(req: NextRequest) {
       log.riddle_fetched = false;
     }
 
+    // -- 7. Riddle Submissions -------------------------------------------------
+    const riddleSubResult = await processStream(
+      db, now, startMs, 'riddle_submission_txs',
+      (cursor) => fetchRiddleSubmissions(cursor),
+      async (page, db, now) => {
+        const subs = dedupEvents(page.data as any[]);
+
+        const seenWallets = new Set<string>();
+        const wallets = subs
+          .filter((s: any) => {
+            if (seenWallets.has(s.wallet_address)) return false;
+            seenWallets.add(s.wallet_address);
+            return true;
+          })
+          .map((s: any) => ({
+            address:        s.wallet_address,
+            last_active_at: s.timestampMs
+              ? new Date(parseInt(s.timestampMs)).toISOString()
+              : now,
+          }));
+        for (const b of chunk(wallets, BATCH_SIZE)) {
+          await withRetry(async () =>
+            db.from('wallets').upsert(b, { onConflict: 'address' })
+              .then(r => { if (r.error) throw new Error(r.error.message); return r; }),
+            'riddle-sub-wallets'
+          );
+        }
+
+        const rows = subs
+          .filter((s: any) => s.riddle_number >= 1 && s.riddle_number <= 3)
+          .map((s: any) => ({
+            wallet_address: s.wallet_address,
+            riddle_number:  s.riddle_number,
+            tx_digest:      s.txDigest,
+            submitted_at:   new Date(parseInt(s.timestampMs)).toISOString(),
+            solved:         false,
+          }));
+        for (const b of chunk(rows, BATCH_SIZE)) {
+          await withRetry(async () =>
+            db.from('riddle_submissions').upsert(b, { onConflict: 'tx_digest' })
+              .then(r => { if (r.error) throw new Error(r.error.message); return r; }),
+            'riddle-sub-upsert'
+          );
+        }
+
+        const drizzletRows = subs.map((s: any) => ({
+          wallet_address: s.wallet_address,
+          source:         'riddle',
+          amount:         RIDDLE_DRIZZLETS_PER_SUBMISSION,
+          reference_id:   s.txDigest,
+          earned_at:      new Date(parseInt(s.timestampMs)).toISOString(),
+        }));
+        for (const b of chunk(drizzletRows, BATCH_SIZE)) {
+          await withRetry(async () =>
+            db.from('drizzlets').upsert(b, { onConflict: 'wallet_address,reference_id' })
+              .then(r => { if (r.error) throw new Error(r.error.message); return r; }),
+            'riddle-sub-drizzlets'
+          );
+        }
+
+        return rows.length;
+      }
+    );
+    log.riddle_submissions = riddleSubResult;
+    
     const hasMore =
       (ikaLockResult    as StreamResult).hasMore ||
       (ikaUnlockResult  as StreamResult).hasMore ||
       (isuiLockResult   as StreamResult).hasMore ||
       (isuiUnlockResult as StreamResult).hasMore ||
-      (mfsmResult       as StreamResult).hasMore;
+      (mfsmResult       as StreamResult).hasMore ||
+      (riddleSubResult  as StreamResult).hasMore;
 
     log.has_more     = hasMore;
     log.elapsed_ms   = Date.now() - startMs;
