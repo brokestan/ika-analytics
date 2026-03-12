@@ -12,6 +12,7 @@ import {
   fetchISUILockEvents,
   fetchISUIUnlockEvents,
   fetchRiddlePool,
+  fetchRiddleSubmissions,
   fetchDurationsForBatch,
   toHumanIka,
   toHumanISUI,
