@@ -631,6 +631,7 @@ export async function GET(req: NextRequest) {
             riddle_two_solved:   data?.riddleTwoSolved   ?? false,
             riddle_three_solved: data?.riddleThreeSolved ?? false,
             chain_drizzlets:     data?.chainDrizzlets    ?? null,
+            community_code:      data?.communityCode     ?? null,
             last_fetched_at:     now,
           };
         });
