@@ -24,6 +24,8 @@ import {
   fetchTransactionEventsInBatch,
   fetchIkaChanNftObjects,
   calcNftDrizzlets,
+  fetchUserTasksObjectIds,
+  fetchUserTasksObjects,
 } from '@/lib/sui-rpc';
 import { buildLockDistribution, forecastDrizzlets } from '@/lib/calculations';
 import { LockDuration } from '@/lib/types';
@@ -518,6 +520,16 @@ export async function GET(req: NextRequest) {
           );
         }
 
+        // Seed new wallets into wallet_user_tasks so UserTasks sync picks them up
+        const utSeedRows = wallets.map((w: any) => ({ wallet_address: w.address }));
+        for (const b of chunk(utSeedRows, BATCH_SIZE)) {
+          await withRetry(async () =>
+            db.from('wallet_user_tasks').upsert(b, { onConflict: 'wallet_address', ignoreDuplicates: true })
+              .then(r => { if (r.error) throw new Error(r.error.message); return r; }),
+            'riddle-sub-ut-seed'
+          );
+        }
+
         const rows = subs
           .filter((s: any) => s.riddle_number >= 1 && s.riddle_number <= 3)
           .map((s: any) => ({
@@ -554,6 +566,89 @@ export async function GET(req: NextRequest) {
       }
     );
     log.riddle_submissions = riddleSubResult;
+
+    // -- 8. UserTasks Sync ------------------------------------------------
+    try {
+      // Get up to 150 wallets that haven't been fetched yet
+      const { data: pending } = await db
+        .from('wallet_user_tasks')
+        .select('wallet_address')
+        .is('last_fetched_at', null)
+        .limit(150);
+
+      if (pending && pending.length > 0) {
+        const walletBatch = pending.map((r: any) => r.wallet_address);
+
+        // Get one tx_digest per wallet from riddle_submissions
+        const txMap: Record<string, string> = {};
+        for (const b of chunk(walletBatch, BATCH_SIZE)) {
+          const { data: txRows } = await db
+            .from('riddle_submissions')
+            .select('wallet_address, tx_digest')
+            .in('wallet_address', b);
+          for (const row of txRows || []) {
+            if (!txMap[row.wallet_address]) txMap[row.wallet_address] = row.tx_digest;
+          }
+        }
+
+        const wallets = Object.keys(txMap);
+
+        // Discover UserTasks object IDs from tx objectChanges
+        const objectIdMap: Record<string, string> = {}; // wallet -> objectId
+        for (const b of chunk(wallets, 50)) {
+          const bDigests = b.map((w: string) => txMap[w]);
+          const discovered = await withRetry(
+            () => fetchUserTasksObjectIds(bDigests),
+            'ut-discover'
+          );
+          for (const wallet of b) {
+            const objId = discovered[txMap[wallet]];
+            if (objId) objectIdMap[wallet] = objId;
+          }
+          await sleep(300);
+        }
+
+        // Fetch UserTasks object data
+        const objectIds = Object.values(objectIdMap);
+        const userData: Record<string, import('@/lib/sui-rpc').UserTasksData> = {};
+        for (const b of chunk(objectIds, 50)) {
+          const fetched = await withRetry(
+            () => fetchUserTasksObjects(b),
+            'ut-fetch'
+          );
+          Object.assign(userData, fetched);
+          await sleep(300);
+        }
+
+        // Upsert results into wallet_user_tasks
+        const utRows = wallets.map((wallet: string) => {
+          const objId = objectIdMap[wallet];
+          const data  = objId ? userData[objId] : null;
+          return {
+            wallet_address:      wallet,
+            object_id:           objId           ?? null,
+            riddle_one_solved:   data?.riddleOneSolved   ?? false,
+            riddle_two_solved:   data?.riddleTwoSolved   ?? false,
+            riddle_three_solved: data?.riddleThreeSolved ?? false,
+            chain_drizzlets:     data?.chainDrizzlets    ?? null,
+            last_fetched_at:     now,
+          };
+        });
+        for (const b of chunk(utRows, BATCH_SIZE)) {
+          await withRetry(async () =>
+            db.from('wallet_user_tasks').upsert(b, { onConflict: 'wallet_address' })
+              .then(r => { if (r.error) throw new Error(r.error.message); return r; }),
+            'ut-upsert'
+          );
+        }
+        log.user_tasks_fetched = utRows.length;
+      } else {
+        log.user_tasks_fetched = 0;
+      }
+    } catch (err) {
+      console.error('[user-tasks]', errMsg(err));
+      log.user_tasks_fetched = 0;
+    }
     
     const hasMore =
       (ikaLockResult    as StreamResult).hasMore ||
