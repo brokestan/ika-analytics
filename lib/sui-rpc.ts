@@ -579,6 +579,7 @@ export interface UserTasksData {
   riddleTwoSolved:    boolean;
   riddleThreeSolved:  boolean;
   chainDrizzlets:     number;
+  communityCode:      string | null;
 }
 
 /**
@@ -624,7 +625,8 @@ export async function fetchUserTasksObjects(
           riddle_one_answered?:   boolean;
           riddle_two_answered?:   boolean;
           riddle_three_answered?: boolean;
-          drizzlets_earned?:      string;
+          drizzlets_earned?:                  string;
+          used_community_participation_code?: number[];
         };
       };
     };
@@ -638,12 +640,17 @@ export async function fetchUserTasksObjects(
     if (!d?.objectId) continue;
     const f = d.content?.fields;
     if (!f) continue;
+    const codeBytes = (f as any).used_community_participation_code;
+    const communityCode = Array.isArray(codeBytes) && codeBytes.length > 0
+      ? String.fromCharCode(...codeBytes)
+      : null;
     map[d.objectId] = {
       objectId:          d.objectId,
       riddleOneSolved:   f.riddle_one_answered   ?? false,
       riddleTwoSolved:   f.riddle_two_answered   ?? false,
       riddleThreeSolved: f.riddle_three_answered ?? false,
       chainDrizzlets:    Number(f.drizzlets_earned ?? 0),
+      communityCode,
     };
   }
   return map;
