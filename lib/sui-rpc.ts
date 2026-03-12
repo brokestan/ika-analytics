@@ -570,3 +570,82 @@ export function calcISUIDrizzlets(
 ): number {
   return (isuiAmount / 10) * ISUI_DRIZZLET_RATE * Math.floor(daysElapsed);
 }
+
+// ─── UserTasks ────────────────────────────────────────────────────────────────
+
+export interface UserTasksData {
+  objectId:           string;
+  riddleOneSolved:    boolean;
+  riddleTwoSolved:    boolean;
+  riddleThreeSolved:  boolean;
+  chainDrizzlets:     number;
+}
+
+/**
+ * Given a list of tx digests (one per wallet), returns a map of
+ * txDigest → UserTasks objectId by scanning objectChanges.
+ */
+export async function fetchUserTasksObjectIds(
+  txDigests: string[]
+): Promise<Record<string, string>> {
+  if (txDigests.length === 0) return {};
+  const results = await rpcCall<Array<{
+    objectChanges?: Array<{
+      type:        string;
+      objectType?: string;
+      objectId?:   string;
+    }>;
+  } | null>>('sui_multiGetTransactionBlocks', [
+    txDigests,
+    { showObjectChanges: true, showInput: false, showEffects: false, showEvents: false },
+  ]);
+  const map: Record<string, string> = {};
+  for (let i = 0; i < txDigests.length; i++) {
+    const changes = results[i]?.objectChanges ?? [];
+    const found = changes.find(c => c.objectType?.includes('::tasks::UserTasks'));
+    if (found?.objectId) map[txDigests[i]] = found.objectId;
+  }
+  return map;
+}
+
+/**
+ * Given a list of UserTasks objectIds, returns a map of
+ * objectId → UserTasksData with solved booleans and chain drizzlets.
+ */
+export async function fetchUserTasksObjects(
+  objectIds: string[]
+): Promise<Record<string, UserTasksData>> {
+  if (objectIds.length === 0) return {};
+  const results = await rpcCall<Array<{
+    data?: {
+      objectId: string;
+      content?: {
+        fields?: {
+          riddle_one_answered?:   boolean;
+          riddle_two_answered?:   boolean;
+          riddle_three_answered?: boolean;
+          drizzlets_earned?:      string;
+        };
+      };
+    };
+  } | null>>('sui_multiGetObjects', [
+    objectIds,
+    { showContent: true },
+  ]);
+  const map: Record<string, UserTasksData> = {};
+  for (const result of results) {
+    const d = result?.data;
+    if (!d?.objectId) continue;
+    const f = d.content?.fields;
+    if (!f) continue;
+    map[d.objectId] = {
+      objectId:          d.objectId,
+      riddleOneSolved:   f.riddle_one_answered   ?? false,
+      riddleTwoSolved:   f.riddle_two_answered   ?? false,
+      riddleThreeSolved: f.riddle_three_answered ?? false,
+      chainDrizzlets:    Number(f.drizzlets_earned ?? 0),
+    };
+  }
+  return map;
+}
+
