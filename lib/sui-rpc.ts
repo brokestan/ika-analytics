@@ -503,7 +503,7 @@ export async function fetchRiddleSubmissions(
         options: { showInput: true },
       },
       cursor ? cursor.txDigest : null,
-      50,
+      100,
       false,
     ]);
 
