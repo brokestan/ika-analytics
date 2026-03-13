@@ -68,7 +68,7 @@ export default function DrizzletPieChart({ data, loading }: Props) {
 
   const total = SEGMENTS.reduce((s, seg) => s + Math.max(0, data[seg.key]), 0);
 
-  const chartData = SEGMENTS
+  const chartData: { name: string; value: number; color: string; pct: number }[] = SEGMENTS
     .map((s) => ({
       name:  s.label,
       value: Math.max(0, data[s.key]),
