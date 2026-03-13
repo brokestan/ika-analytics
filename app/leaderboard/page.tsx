@@ -1,6 +1,6 @@
 'use client';
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Search, Trophy, ChevronLeft, ChevronRight, X, Users, ArrowDownUp, ArrowUp, ArrowDown } from 'lucide-react';
+import { Search, Trophy, ChevronLeft, ChevronRight, X, Users, ArrowDownUp, ArrowUp, ArrowDown, Info } from 'lucide-react';
 import LeaderboardTable from '@/components/LeaderboardTable';
 import type { LeaderboardEntry } from '@/app/api/leaderboard/route';
 import clsx from 'clsx';
@@ -100,6 +100,7 @@ export default function LeaderboardPage() {
     return [page - 2, page - 1, page, page + 1, page + 2];
   }
 
+  const [showInfo, setShowInfo] = useState(false);
   const SortIcon = ({ active, dir }: { active: boolean; dir: SortDir }) => {
     if (!active) return <ArrowDownUp className="w-3 h-3 text-ika-muted/50" />;
     return dir === 'desc'
@@ -160,7 +161,7 @@ export default function LeaderboardPage() {
           )}
         </div>
 
-        {/* Sort filters */}
+        {/* Sort filters + info */}
         <div className="flex items-center gap-2 flex-shrink-0">
           <span className="text-xs text-ika-muted whitespace-nowrap">Sort by:</span>
           <button
@@ -187,6 +188,43 @@ export default function LeaderboardPage() {
             Staked IKA
             <SortIcon active={sortBy === 'ika_locked'} dir={sortDir} />
           </button>
+
+          {/* Info button */}
+          <div className="relative">
+            <button
+              onClick={() => setShowInfo(v => !v)}
+              aria-label="Column info"
+              className={clsx(
+                'flex items-center justify-center w-8 h-8 rounded-lg border transition-all',
+                showInfo
+                  ? 'bg-ika-pink/10 border-ika-pink/40 text-ika-pink'
+                  : 'bg-ika-card border-ika-border text-ika-muted hover:border-ika-pink/30 hover:text-ika-text'
+              )}
+            >
+              <Info className="w-3.5 h-3.5" />
+            </button>
+
+            {showInfo && (
+              <div className="absolute right-0 top-full mt-2 w-72 bg-ika-card border border-ika-border rounded-xl shadow-2xl p-4 z-50 animate-fade-in">
+                <p className="text-xs font-semibold text-white mb-3 uppercase tracking-wider">Column Guide</p>
+                <div className="space-y-2.5 text-[11px] text-ika-dim">
+                  <div><span className="text-white font-medium">Drz from IKA</span> — Drizzlets earned from IKA locks (both active and unlocked positions combined)</div>
+                  <div><span className="text-white font-medium">Drz from iSUI</span> — Drizzlets earned from iSUI locks (both active and unlocked positions combined)</div>
+                  <div><span className="text-white font-medium">Riddle Drizzlets</span> — Drizzlets earned from riddle submissions (31 drz each, right or wrong). Uses on-chain data for full accuracy.</div>
+                  <div><span className="text-white font-medium">NFTs Revealed</span> — Number of Squid Maiden NFTs revealed, with total drizzlets earned from reveals shown below</div>
+                  <div><span className="text-white font-medium">Locked Drizzlets</span> — Drizzlets silently accumulating from positions that are still locked and haven't been claimed yet</div>
+                  <div><span className="text-white font-medium">Unlocked Drizzlets</span> — All realized drizzlets: from unlocked staking positions + NFT reveals + riddle submissions</div>
+                  <div><span className="text-white font-medium">Total Drizzlets</span> — Locked + Unlocked combined. Your real drizzlet balance.</div>
+                </div>
+                <button
+                  onClick={() => setShowInfo(false)}
+                  className="mt-3 text-[10px] text-ika-muted hover:text-ika-text transition-colors"
+                >
+                  Close
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
