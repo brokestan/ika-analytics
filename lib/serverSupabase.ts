@@ -1,95 +1,40 @@
-import { createClient, SupabaseClient } from '@supabase/supabase-js';
+/**
+ * Server-only data fetchers — called directly from Server Components.
+ * Uses service-role key for reads so RLS does not block anything.
+ */
+import { createClient } from '@supabase/supabase-js';
 
-// ─── Client ───────────────────────────────────────────────────────────────────
-
-export function getAdminClient(): SupabaseClient {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+function getAdminClient() {
+  const url  = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key  = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
   if (!url || !key) throw new Error('Missing Supabase env vars');
   return createClient(url, key, { auth: { persistSession: false } });
 }
 
-// ─── Checkpoint Helpers ───────────────────────────────────────────────────────
-
-export interface Checkpoint {
-  event_type: string;
-  last_tx_digest: string | null;
-  last_event_seq: string | null;
-  updated_at: string;
-}
-
-export async function getCheckpoint(db: SupabaseClient, id: string): Promise<Checkpoint | null> {
-  try {
-    const { data } = await db
-      .from('indexer_checkpoints')
-      .select('*')
-      .eq('event_type', id)
-      .single();
-    return data as Checkpoint | null;
-  } catch { return null; }
-}
-
-export async function saveCheckpoint(
-  db: SupabaseClient,
-  id: string,
-  txDigest: string,
-  eventSeq: string
-): Promise<void> {
-  await db.from('indexer_checkpoints').upsert({
-    event_type: id,
-    last_tx_digest: txDigest,
-    last_event_seq: eventSeq,
-    updated_at: new Date().toISOString(),
-  }, { onConflict: 'event_type' });
-}
-
-export async function clearCheckpoint(db: SupabaseClient, id: string): Promise<void> {
-  await db.from('indexer_checkpoints').upsert({
-    event_type: id,
-    last_tx_digest: null,
-    last_event_seq: null,
-    updated_at: new Date().toISOString(),
-  }, { onConflict: 'event_type' });
-}
-
-// ─── Refresh Log ──────────────────────────────────────────────────────────────
-
-export async function writeRefreshLog(
-  db: SupabaseClient,
-  mode: 'checkpoint' | 'full',
-  status: 'success' | 'error',
-  detail: Record<string, unknown>
-): Promise<void> {
-  try {
-    await db.from('refresh_logs').insert({
-      mode,
-      status,
-      detail,
-      ran_at: new Date().toISOString(),
-    });
-  } catch { /* non-critical, never throw */ }
-}
-
-// ─── Dashboard Fetchers (Server Components) ───────────────────────────────────
+// ─── Dashboard ────────────────────────────────────────────────────────────────
 
 export interface DashboardRow {
-  total_ika_staked: number;
-  total_isui_staked: number;
-  total_locked_nfts: number;
-  total_unlocked_nfts: number;
-  total_staking_nfts: number;
-  unique_staking_wallets: number;
-  total_drizzlets_earned: number;
-  forecast_drizzlets_30d: number;
-  forecast_drizzlets_60d: number;
+  total_ika_staked:          number;
+  total_isui_staked:         number;
+  total_locked_nfts:         number;
+  total_unlocked_nfts:       number;
+  total_staking_nfts:        number;
+  unique_staking_wallets:    number;
+  total_drizzlets_earned:    number;
+  forecast_drizzlets_30d:    number;
+  forecast_drizzlets_60d:    number;
   forecast_drizzlets_season: number;
-  last_indexed_at: string | null;
+  last_indexed_at:           string | null;
 }
 
 export async function serverGetDashboard(): Promise<DashboardRow | null> {
   try {
-    const { data, error } = await getAdminClient()
-      .from('dashboard_cache').select('*').eq('id', 'main').single();
+    const db = getAdminClient();
+    const { data, error } = await db
+      .from('dashboard_cache')
+      .select('*')
+      .eq('id', 'main')
+      .single();
     if (error) throw error;
     return data as DashboardRow;
   } catch { return null; }
@@ -97,8 +42,11 @@ export async function serverGetDashboard(): Promise<DashboardRow | null> {
 
 export async function serverGetRiddlePools() {
   try {
-    const { data } = await getAdminClient()
-      .from('riddle_pools').select('pool_index,amount,fetched_at').order('pool_index');
+    const db = getAdminClient();
+    const { data } = await db
+      .from('riddle_pools')
+      .select('pool_index, amount, fetched_at')
+      .order('pool_index');
     const pools = data || [];
     return {
       pool1:      Number(pools.find((p: { pool_index: number }) => p.pool_index === 1)?.amount ?? 0),
@@ -112,16 +60,194 @@ export async function serverGetRiddlePools() {
 
 export async function serverGetLockDist() {
   try {
-    const { data } = await getAdminClient()
-      .from('lock_distribution_cache').select('*').order('duration');
+    const db = getAdminClient();
+    const { data } = await db
+      .from('lock_distribution_cache')
+      .select('*')
+      .order('duration');
     return data ?? [];
   } catch { return []; }
 }
 
 export async function serverGetDrizzletDist() {
   try {
-    const { data } = await getAdminClient()
-      .from('drizzlet_distribution_cache').select('*').eq('id', 'main').single();
+    const db = getAdminClient();
+    const { data } = await db
+      .from('drizzlet_distribution_cache')
+      .select('*')
+      .eq('id', 'main')
+      .single();
     return data ?? { locked_ika_rewards: 0, isui_rewards: 0, unlocked_drizzlets: 0, riddle_rewards: 0 };
   } catch { return { locked_ika_rewards: 0, isui_rewards: 0, unlocked_drizzlets: 0, riddle_rewards: 0 }; }
-                                      }
+}
+
+// ─── Riddle Stats ─────────────────────────────────────────────────────────────
+
+export interface RiddleStats {
+  total_submissions: number;
+  r1_solvers:        number;
+  r2_solvers:        number;
+  r3_solvers:        number;
+  total_wallets:     number;
+}
+
+export async function serverGetRiddleStats(): Promise<RiddleStats> {
+  try {
+    const db = getAdminClient();
+    const [subRes, taskRes] = await Promise.all([
+      db.from('riddle_submissions').select('id', { count: 'exact', head: true }),
+      db.from('wallet_user_tasks').select('riddle_one_solved, riddle_two_solved, riddle_three_solved'),
+    ]);
+    const tasks = taskRes.data || [];
+    return {
+      total_submissions: subRes.count  || 0,
+      r1_solvers: tasks.filter((t: { riddle_one_solved: boolean }) => t.riddle_one_solved).length,
+      r2_solvers: tasks.filter((t: { riddle_two_solved: boolean }) => t.riddle_two_solved).length,
+      r3_solvers: tasks.filter((t: { riddle_three_solved: boolean }) => t.riddle_three_solved).length,
+      total_wallets: tasks.length,
+    };
+  } catch { return { total_submissions: 0, r1_solvers: 0, r2_solvers: 0, r3_solvers: 0, total_wallets: 0 }; }
+}
+
+// ─── NFT Stats ────────────────────────────────────────────────────────────────
+
+export interface NftStats {
+  total_reveals:    number;
+  total_drizzlets:  number;
+  avg_per_reveal:   number;
+}
+
+export async function serverGetNftStats(): Promise<NftStats> {
+  try {
+    const db = getAdminClient();
+    const { data } = await db
+      .from('drizzlets')
+      .select('amount')
+      .eq('source', 'nft_reveal');
+    const rows  = data || [];
+    const total = rows.reduce((s: number, r: { amount: number }) => s + Number(r.amount), 0);
+    return {
+      total_reveals:   rows.length,
+      total_drizzlets: total,
+      avg_per_reveal:  rows.length > 0 ? Math.round(total / rows.length) : 0,
+    };
+  } catch { return { total_reveals: 0, total_drizzlets: 0, avg_per_reveal: 0 }; }
+}
+
+// ─── Community Code Stats ─────────────────────────────────────────────────────
+
+export interface CodeStats {
+  wallets_with_code: number;
+  unique_codes:      number;
+}
+
+export async function serverGetCodeStats(): Promise<CodeStats> {
+  try {
+    const db = getAdminClient();
+    const { data } = await db
+      .from('wallet_user_tasks')
+      .select('community_code')
+      .not('community_code', 'is', null);
+    const rows = data || [];
+    const uniqueCodes = new Set(
+      rows
+        .map((r: { community_code: string | null }) => r.community_code?.trim().toLowerCase())
+        .filter(Boolean)
+    );
+    return {
+      wallets_with_code: rows.length,
+      unique_codes:      uniqueCodes.size,
+    };
+  } catch { return { wallets_with_code: 0, unique_codes: 0 }; }
+}
+
+// ─── Top Earners ──────────────────────────────────────────────────────────────
+
+export interface TopEarner {
+  rank:            number;
+  address:         string;
+  ika_locked:      number;
+  total_drizzlets: number;
+}
+
+export async function serverGetTopEarners(limit = 3): Promise<TopEarner[]> {
+  try {
+    const db = getAdminClient();
+    const { data } = await db
+      .from('wallets')
+      .select('address, ika_locked, total_drizzlets')
+      .gt('total_drizzlets', 0)
+      .order('total_drizzlets', { ascending: false })
+      .limit(limit);
+    return (data || []).map((w: { address: string; ika_locked: number; total_drizzlets: number }, i: number) => ({
+      rank:            i + 1,
+      address:         w.address,
+      ika_locked:      Number(w.ika_locked),
+      total_drizzlets: Number(w.total_drizzlets),
+    }));
+  } catch { return []; }
+}
+
+// ─── Token Prices (CoinGecko) ─────────────────────────────────────────────────
+
+export interface Prices {
+  ika: number | null;
+  sui: number | null;
+}
+
+export async function serverGetPrices(): Promise<Prices> {
+  try {
+    const ikaId = process.env.IKA_COINGECKO_ID || 'ika';
+    const res = await fetch(
+      `https://api.coingecko.com/api/v3/simple/price?ids=sui%2C${ikaId}&vs_currencies=usd`,
+      { next: { revalidate: 300 }, signal: AbortSignal.timeout(4000) }
+    );
+    if (!res.ok) return { ika: null, sui: null };
+    const json = await res.json() as Record<string, { usd?: number }>;
+    return {
+      ika: json[ikaId]?.usd ?? null,
+      sui: json['sui']?.usd   ?? null,
+    };
+  } catch { return { ika: null, sui: null }; }
+}
+
+// ─── Checkpoint / Refresh Log helpers (used by indexer) ──────────────────────
+
+export async function getCheckpoint(db: ReturnType<typeof getAdminClient>, eventType: string) {
+  const { data } = await db
+    .from('indexer_checkpoints')
+    .select('last_tx_digest, last_event_seq')
+    .eq('event_type', eventType)
+    .single();
+  return data ?? null;
+}
+
+export async function saveCheckpoint(
+  db: ReturnType<typeof getAdminClient>,
+  eventType: string,
+  txDigest: string,
+  eventSeq: string
+) {
+  await db.from('indexer_checkpoints').upsert(
+    { event_type: eventType, last_tx_digest: txDigest, last_event_seq: eventSeq, updated_at: new Date().toISOString() },
+    { onConflict: 'event_type' }
+  );
+}
+
+export async function clearCheckpoint(db: ReturnType<typeof getAdminClient>, eventType: string) {
+  await db.from('indexer_checkpoints').delete().eq('event_type', eventType);
+}
+
+export async function writeRefreshLog(
+  db: ReturnType<typeof getAdminClient>,
+  mode: string,
+  status: string,
+  log: Record<string, unknown>
+) {
+  await db.from('refresh_logs').insert({
+    mode,
+    status,
+    log,
+    created_at: new Date().toISOString(),
+  });
+}
