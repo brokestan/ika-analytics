@@ -78,6 +78,7 @@ export async function GET(req: NextRequest) {
     let walletQuery = db
       .from('wallets')
       .select('address, ika_locked, isui_locked, active_locks, total_drizzlets', { count: 'exact' })
+      .gt('total_drizzlets', 0)
       .order(sortBy, { ascending: sortAsc });
 
     if (search.length >= 4) {
@@ -193,17 +194,19 @@ export async function GET(req: NextRequest) {
       const locked   = lockedByWallet[addr] || { ika: 0, isui: 0 };
       const task     = taskByWallet[addr];
 
-      // Riddle drizzlets: use chain_drizzlets (covers gap wallets) if higher than DB sum
+      // Riddle drizzlets: use chain_drizzlets (authoritative on-chain) if higher than DB sum
       const drzRiddle = task
         ? Math.max(task.chain_drizzlets, drz.riddle)
         : drz.riddle;
 
       const lockedTotal   = locked.ika + locked.isui;
-      const unlockedTotal = drz.unlock + drz.isui_lock;
+      // Unlocked = all realized/claimable drizzlets: staking unlocks + NFT reveals + riddle submissions
+      const unlockedTotal = drz.unlock + drz.isui_lock + drz.nft_reveal + drzRiddle;
       const drzFromIka    = locked.ika  + drz.unlock;
       const drzFromIsui   = locked.isui + drz.isui_lock;
       const drzNft        = drz.nft_reveal;
-      const total         = lockedTotal + unlockedTotal + drzRiddle + drzNft;
+      // Total = locked (still earning silently) + unlocked (all realized sources)
+      const total         = lockedTotal + unlockedTotal;
 
       const baseRank = from + i + 1;
       const rank     = rankOverrides[addr] ?? baseRank;
