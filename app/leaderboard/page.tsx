@@ -212,7 +212,7 @@ export default function LeaderboardPage() {
                   <div><span className="text-white font-medium">Drz from iSUI</span> — Drizzlets earned from iSUI locks (both active and unlocked positions combined)</div>
                   <div><span className="text-white font-medium">Riddle Drizzlets</span> — Drizzlets earned from riddle submissions (31 drz each, right or wrong). Uses on-chain data for full accuracy.</div>
                   <div><span className="text-white font-medium">NFTs Revealed</span> — Number of Squid Maiden NFTs revealed, with total drizzlets earned from reveals shown below</div>
-                  <div><span className="text-white font-medium">Locked Drizzlets</span> — Drizzlets silently accumulating from positions that are still locked and haven't been claimed yet</div>
+                  <div><span className="text-white font-medium">Locked Drizzlets</span> — Drizzlets silently accumulating from positions that are still locked and have not been claimed yet</div>
                   <div><span className="text-white font-medium">Unlocked Drizzlets</span> — All realized drizzlets: from unlocked staking positions + NFT reveals + riddle submissions</div>
                   <div><span className="text-white font-medium">Total Drizzlets</span> — Locked + Unlocked combined. Your real drizzlet balance.</div>
                 </div>
