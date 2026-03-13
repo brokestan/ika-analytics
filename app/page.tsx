@@ -1,7 +1,4 @@
-import {
-  Coins, Droplets, Lock, Unlock, LayoutGrid,
-  Users, Sparkles, TrendingUp, Clock, AlertCircle,
-} from 'lucide-react';
+import { Clock, AlertCircle } from 'lucide-react';
 import MetricCard          from '@/components/MetricCard';
 import DrizzletPieChart    from '@/components/DrizzletPieChart';
 import LockDistributionChart from '@/components/LockDistributionChart';
