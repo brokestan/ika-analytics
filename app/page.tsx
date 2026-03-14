@@ -22,7 +22,7 @@ import {
 } from '@/lib/serverSupabase';
 import { formatNumber } from '@/lib/calculations';
 
-export const revalidate = 300;
+export const revalidate = 0;
 
 function SectionLabel({ children }: { children: ReactNode }) {
   return (
