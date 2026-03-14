@@ -2,7 +2,14 @@
 import { PieChart, Pie, Cell, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { Droplets } from 'lucide-react';
 import { formatNumber } from '@/lib/calculations';
-import type { DrizzletBreakdown } from '@/lib/serverSupabase';
+interface DrizzletBreakdown {
+  locked_ika:    number;
+  unlocked_ika:  number;
+  locked_isui:   number;
+  unlocked_isui: number;
+  nft_reveals:   number;
+  riddle:        number;
+}
 
 const SEGMENTS: { key: keyof DrizzletBreakdown; label: string; color: string }[] = [
   { key: 'locked_ika',    label: 'Locked IKA',    color: '#FF2D78' },
