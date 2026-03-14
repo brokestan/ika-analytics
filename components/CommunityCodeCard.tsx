@@ -1,5 +1,5 @@
 'use client';
-import { Users2 } from 'lucide-react';
+import { Users } from 'lucide-react';
 import type { CodeStats } from '@/lib/serverSupabase';
 
 interface Props {
@@ -21,7 +21,7 @@ export default function CommunityCodeCard({ data, loading }: Props) {
     <div className="card p-4 animate-slide-up" style={{ animationDelay: '240ms' }}>
       <div className="flex items-center gap-2 mb-3">
         <div className="w-6 h-6 rounded-md bg-cyan-500/20 flex items-center justify-center">
-          <Users2 className="w-3 h-3 text-cyan-400" />
+          <Users className="w-3 h-3 text-cyan-400" />
         </div>
         <h3 className="font-display font-semibold text-xs text-white uppercase tracking-widest">
           Community Codes
