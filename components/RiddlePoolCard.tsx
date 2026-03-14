@@ -1,7 +1,13 @@
 'use client';
 import { Puzzle } from 'lucide-react';
 import { formatNumber } from '@/lib/calculations';
-import type { RiddleStats } from '@/lib/serverSupabase';
+interface RiddleStats {
+  total_submissions: number;
+  r1_solvers:        number;
+  r2_solvers:        number;
+  r3_solvers:        number;
+  total_wallets:     number;
+}
 
 interface RiddlePoolData {
   pool1:      number;
