@@ -167,26 +167,28 @@ export async function serverGetRiddleStats(): Promise<RiddleStats> {
 // ─── NFT Stats ────────────────────────────────────────────────────────────────
 
 export interface NftStats {
-  total_reveals:    number;
-  total_drizzlets:  number;
-  avg_per_reveal:   number;
+  total_reveals:   number;
+  total_drizzlets: number;
+  avg_per_reveal:  number;
+  unique_wallets:  number;
 }
 
 export async function serverGetNftStats(): Promise<NftStats> {
   try {
     const db = getAdminClient();
     const { data } = await db
-      .from('drizzlets')
-      .select('amount')
-      .eq('source', 'nft_reveal');
-    const rows  = data || [];
-    const total = rows.reduce((s: number, r: { amount: number }) => s + Number(r.amount), 0);
+      .from('nft_reveals')
+      .select('wallet_address, drizzlets_earned');
+    const rows         = data || [];
+    const total        = rows.reduce((s: number, r: { drizzlets_earned: number }) => s + Number(r.drizzlets_earned), 0);
+    const uniqueWallets = new Set(rows.map((r: { wallet_address: string }) => r.wallet_address)).size;
     return {
       total_reveals:   rows.length,
       total_drizzlets: total,
       avg_per_reveal:  rows.length > 0 ? Math.round(total / rows.length) : 0,
+      unique_wallets:  uniqueWallets,
     };
-  } catch { return { total_reveals: 0, total_drizzlets: 0, avg_per_reveal: 0 }; }
+  } catch { return { total_reveals: 0, total_drizzlets: 0, avg_per_reveal: 0, unique_wallets: 0 }; }
 }
 
 // ─── Community Code Stats ─────────────────────────────────────────────────────
@@ -202,7 +204,8 @@ export async function serverGetCodeStats(): Promise<CodeStats> {
     const { data } = await db
       .from('wallet_user_tasks')
       .select('community_code')
-      .not('community_code', 'is', null);
+      .not('community_code', 'is', null)
+      .neq('community_code', '');
     const rows = data || [];
     const uniqueCodes = new Set(
       rows
