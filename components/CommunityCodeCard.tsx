@@ -1,7 +1,9 @@
 'use client';
 import { Users } from 'lucide-react';
-import type { CodeStats } from '@/lib/serverSupabase';
-
+interface CodeStats {
+  wallets_with_code: number;
+  unique_codes:      number;
+}
 interface Props {
   data:     CodeStats | null;
   loading?: boolean;
