@@ -255,7 +255,6 @@ export async function serverGetPrices(): Promise<Prices> {
     const ikaId = process.env.IKA_COINGECKO_ID || 'ika';
     const res = await fetch(
       `https://api.coingecko.com/api/v3/simple/price?ids=sui%2C${ikaId}&vs_currencies=usd`,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       { next: { revalidate: 300 } } as any
     );
     if (!res.ok) return { ika: null, sui: null };
