@@ -2,9 +2,9 @@
  * Server-only data fetchers — called directly from Server Components.
  * Uses service-role key for reads so RLS does not block anything.
  */
-import { createClient } from '@supabase/supabase-js';
+import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
-function getAdminClient() {
+export function getAdminClient() {
   const url  = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key  = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
   if (!url || !key) throw new Error('Missing Supabase env vars');
@@ -268,7 +268,7 @@ export async function serverGetPrices(): Promise<Prices> {
 
 // ─── Checkpoint / Refresh Log helpers (used by indexer) ──────────────────────
 
-export async function getCheckpoint(db: ReturnType<typeof getAdminClient>, eventType: string) {
+export async function getCheckpoint(db: SupabaseClient, eventType: string) {
   const { data } = await db
     .from('indexer_checkpoints')
     .select('last_tx_digest, last_event_seq')
@@ -278,7 +278,7 @@ export async function getCheckpoint(db: ReturnType<typeof getAdminClient>, event
 }
 
 export async function saveCheckpoint(
-  db: ReturnType<typeof getAdminClient>,
+  db: SupabaseClient,
   eventType: string,
   txDigest: string,
   eventSeq: string
@@ -289,12 +289,12 @@ export async function saveCheckpoint(
   );
 }
 
-export async function clearCheckpoint(db: ReturnType<typeof getAdminClient>, eventType: string) {
+export async function clearCheckpoint(db: SupabaseClient, eventType: string) {
   await db.from('indexer_checkpoints').delete().eq('event_type', eventType);
 }
 
 export async function writeRefreshLog(
-  db: ReturnType<typeof getAdminClient>,
+  db: SupabaseClient,
   mode: string,
   status: string,
   log: Record<string, unknown>
