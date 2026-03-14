@@ -1,8 +1,11 @@
 'use client';
-import { Image } from 'lucide-react';
+import { LayoutGrid } from 'lucide-react';
 import { formatNumber } from '@/lib/calculations';
-import type { NftStats } from '@/lib/serverSupabase';
-
+interface NftStats {
+  total_reveals:   number;
+  total_drizzlets: number;
+  avg_per_reveal:  number;
+}
 interface Props {
   data:     NftStats | null;
   loading?: boolean;
@@ -48,7 +51,7 @@ export default function NftRevealsCard({ data, loading }: Props) {
     <div className="card p-5 animate-slide-up" style={{ animationDelay: '220ms' }}>
       <div className="flex items-center gap-2 mb-4">
         <div className="w-7 h-7 rounded-lg bg-amber-500/20 flex items-center justify-center">
-          <Image className="w-3.5 h-3.5 text-amber-400" />
+          <LayoutGrid className="w-3.5 h-3.5 text-amber-400" />
         </div>
         <h3 className="font-display font-semibold text-sm text-white">NFT Reveals</h3>
       </div>
