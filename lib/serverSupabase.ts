@@ -186,7 +186,8 @@ export async function serverGetNftStats(): Promise<NftStats> {
     const db = getAdminClient();
     const { data } = await db
       .from('nft_reveals')
-      .select('wallet_address, drizzlets_earned');
+      .select('wallet_address, drizzlets_earned')
+      .limit(10000);
     const rows         = data || [];
     const total        = rows.reduce((s: number, r: { drizzlets_earned: number }) => s + Number(r.drizzlets_earned), 0);
     const uniqueWallets = new Set(rows.map((r: { wallet_address: string }) => r.wallet_address)).size;
@@ -213,7 +214,8 @@ export async function serverGetCodeStats(): Promise<CodeStats> {
       .from('wallet_user_tasks')
       .select('community_code')
       .not('community_code', 'is', null)
-      .neq('community_code', '');
+      .neq('community_code', '')
+      .limit(10000);
     const rows = data || [];
     const uniqueCodes = new Set(
       rows
