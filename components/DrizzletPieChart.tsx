@@ -91,7 +91,7 @@ export default function DrizzletPieChart({ data, loading }: Props) {
         <h3 className="font-display font-semibold text-sm text-white">Drizzlet Distribution</h3>
         {total > 0 && (
           <span className="ml-auto font-mono text-xs text-ika-dim bg-white/5 px-2 py-0.5 rounded-full">
-            {formatNumber(total, 2)}B total
+            {formatNumber(total, 2)} total
           </span>
         )}
       </div>
