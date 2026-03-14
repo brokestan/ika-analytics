@@ -1,4 +1,7 @@
-import { Clock, AlertCircle } from 'lucide-react';
+import {
+  Coins, Droplets, Lock, Unlock, LayoutGrid,
+  Users, Sparkles, TrendingUp, Clock, AlertCircle,
+} from 'lucide-react';
 import MetricCard          from '@/components/MetricCard';
 import DrizzletPieChart    from '@/components/DrizzletPieChart';
 import LockDistributionChart from '@/components/LockDistributionChart';
@@ -12,7 +15,7 @@ import {
   serverGetDashboard,
   serverGetRiddlePools,
   serverGetLockDist,
-  serverGetDrizzletDist,
+  serverGetDrizzletBreakdown,
   serverGetRiddleStats,
   serverGetNftStats,
   serverGetCodeStats,
@@ -32,12 +35,12 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
 }
 
 export default async function DashboardPage() {
-  const [m, riddle, lockDist, drizzDist, riddleStats, nftStats, codeStats, topEarners, prices] =
+  const [m, riddle, lockDist, drizzBreakdown, riddleStats, nftStats, codeStats, topEarners, prices] =
     await Promise.all([
       serverGetDashboard(),
       serverGetRiddlePools(),
       serverGetLockDist(),
-      serverGetDrizzletDist(),
+      serverGetDrizzletBreakdown(),
       serverGetRiddleStats(),
       serverGetNftStats(),
       serverGetCodeStats(),
@@ -60,10 +63,8 @@ export default async function DashboardPage() {
   const isuiUsd = prices.sui; // iSUI ≈ SUI price
   const fmt$    = (n: number) => `$${formatNumber(n, 1)}`;
 
-  // Pass NFT drizzlets into the pie chart
-  const enrichedDrizzDist = drizzDist
-    ? { ...drizzDist, nft_rewards: nftStats?.total_drizzlets ?? 0 }
-    : null;
+  // Pass breakdown directly to pie chart — all 6 sources already split correctly
+  const enrichedDrizzDist = drizzBreakdown ?? null;
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6 space-y-6">
@@ -108,18 +109,18 @@ export default async function DashboardPage() {
         <MetricCard
           title="Total IKA Staked"
           value={m?.total_ika_staked ?? 0}
-          iconName="Coins"
+          icon={Coins}
           iconColor="text-ika-pink"
           accent
           suffix=" IKA"
-          subtitle={ikaUsd ? fmt$((m?.total_ika_staked ?? 0) * ikaUsd) : undefined}
+          subtitle={ikaUsd ? fmt$(( m?.total_ika_staked ?? 0) * ikaUsd) : undefined}
           loading={loading}
           animationDelay={0}
         />
         <MetricCard
           title="Total iSUI Staked"
           value={m?.total_isui_staked ?? 0}
-          iconName="Droplets"
+          icon={Droplets}
           iconColor="text-violet-400"
           suffix=" iSUI"
           subtitle={isuiUsd ? fmt$((m?.total_isui_staked ?? 0) * isuiUsd) : undefined}
@@ -129,7 +130,7 @@ export default async function DashboardPage() {
         <MetricCard
           title="Locked NFTs"
           value={m?.total_locked_nfts ?? 0}
-          iconName="Lock"
+          icon={Lock}
           iconColor="text-amber-400"
           decimals={0}
           subtitle="active staking positions"
@@ -139,7 +140,7 @@ export default async function DashboardPage() {
         <MetricCard
           title="Unlocked NFTs"
           value={m?.total_unlocked_nfts ?? 0}
-          iconName="Unlock"
+          icon={Unlock}
           iconColor="text-emerald-400"
           decimals={0}
           subtitle="completed positions"
@@ -149,7 +150,7 @@ export default async function DashboardPage() {
         <MetricCard
           title="Total Staking NFTs"
           value={m?.total_staking_nfts ?? 0}
-          iconName="LayoutGrid"
+          icon={LayoutGrid}
           iconColor="text-cyan-400"
           decimals={0}
           subtitle="all-time minted"
@@ -159,7 +160,7 @@ export default async function DashboardPage() {
         <MetricCard
           title="Unique Staking Wallets"
           value={m?.unique_staking_wallets ?? 0}
-          iconName="Users"
+          icon={Users}
           iconColor="text-blue-400"
           decimals={0}
           loading={loading}
@@ -168,7 +169,7 @@ export default async function DashboardPage() {
         <MetricCard
           title="Total Drizzlets Earned"
           value={m?.total_drizzlets_earned ?? 0}
-          iconName="Sparkles"
+          icon={Sparkles}
           iconColor="text-ika-pink"
           accent
           loading={loading}
@@ -177,7 +178,7 @@ export default async function DashboardPage() {
         <MetricCard
           title="Season Forecast (45d)"
           value={day45}
-          iconName="TrendingUp"
+          icon={TrendingUp}
           iconColor="text-emerald-400"
           subtitle="est. season end projection"
           loading={loading}
