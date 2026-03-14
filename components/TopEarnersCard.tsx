@@ -2,7 +2,12 @@
 import Link from 'next/link';
 import { ArrowRight, ExternalLink } from 'lucide-react';
 import { formatNumber, shortenAddress } from '@/lib/calculations';
-import type { TopEarner } from '@/lib/serverSupabase';
+interface TopEarner {
+  rank:            number;
+  address:         string;
+  ika_locked:      number;
+  total_drizzlets: number;
+}
 
 interface Props {
   data:     TopEarner[];
