@@ -1,117 +1,66 @@
-import { LockDuration, LockDistributionItem } from './types';
+import { LockDistributionItem, LockDuration } from './types';
 import { getDrizzletRate } from './sui-rpc';
 
-// ─── Drizzlet Calculations ────────────────────────────────────────────────────
-
-export function calcIkaDrizzletsForLock(
-  ikaAmount: number,
-  durationValue: LockDuration,
-  daysElapsed: number
-): number {
-  const rate = getDrizzletRate(durationValue);
-  const fullDays = Math.min(Math.floor(daysElapsed), effectiveDays(durationValue));
-  return (ikaAmount / 10) * rate * fullDays;
+interface LockInput {
+  lock_duration: LockDuration;
+  ika_amount: number;
 }
 
-export function calcISuiDrizzletsForLock(isuiAmount: number, daysElapsed: number): number {
-  return isuiAmount * Math.floor(daysElapsed);
-}
-
-// For season lock, assume 90-day season
-export function effectiveDays(duration: LockDuration): number {
-  if (duration === 0)  return 90;
-  if (duration === 1)  return 1;
-  if (duration === 7)  return 7;
-  return 30;
-}
-
-// ─── Forecast ─────────────────────────────────────────────────────────────────
-
-export interface ForecastResult {
-  current: number;
-  day15: number;
-  day30: number;
-  day45: number;
-  day60: number;
-  season_end: number;
-}
-
-export function forecastDrizzlets(
-  currentDrizzlets: number,
-  totalIkaActive: number,
-  totalISuiActive: number,
-  averageDailyIkaRate: number,
-  daysRemaining: number = 45
-): ForecastResult {
-  const dailyIka  = (totalIkaActive / 10) * averageDailyIkaRate;
-  const dailyISui = totalISuiActive * 1;
-  const dailyTotal = dailyIka + dailyISui;
-
-  return {
-    current:    Math.round(currentDrizzlets),
-    day15:      Math.round(currentDrizzlets + dailyTotal * 15),
-    day30:      Math.round(currentDrizzlets + dailyTotal * 30),
-    day45:      Math.round(currentDrizzlets + dailyTotal * 45),
-    day60:      Math.round(currentDrizzlets + dailyTotal * 60),
-    season_end: Math.round(currentDrizzlets + dailyTotal * daysRemaining),
-  };
-}
-
-// ─── Lock Distribution ────────────────────────────────────────────────────────
-
-export function buildLockDistribution(
-  locks: Array<{ lock_duration: LockDuration; ika_amount: number }>
-): LockDistributionItem[] {
-  const groups: Record<LockDuration, { count: number; ika: number }> = {
-    0: { count: 0, ika: 0 },
-    1: { count: 0, ika: 0 },
-    7: { count: 0, ika: 0 },
-    30: { count: 0, ika: 0 },
-  };
-
-  for (const lock of locks) {
-    const d = lock.lock_duration;
-    groups[d].count += 1;
-    groups[d].ika   += lock.ika_amount;
-  }
-
-  const total = locks.length || 1;
-
+export function buildLockDistribution(locks: LockInput[]): LockDistributionItem[] {
+  const durations: LockDuration[] = [0, 1, 7, 30];
   const labels: Record<LockDuration, string> = {
     0:  'Season Lock',
     1:  '1 Day Lock',
     7:  '7 Day Lock',
     30: '30 Day Lock',
   };
-
-  return ([0, 1, 7, 30] as LockDuration[]).map((d) => ({
-    duration:   d,
-    label:      labels[d],
-    percentage: Math.round((groups[d].count / total) * 100),
-    total_nfts: groups[d].count,
-    total_ika:  groups[d].ika,
-    rate:       getDrizzletRate(d),
-  }));
+  const total = locks.length || 1;
+  return durations.map((d) => {
+    const group = locks.filter((l) => l.lock_duration === d);
+    return {
+      duration:   d,
+      label:      labels[d],
+      percentage: Math.round((group.length / total) * 100),
+      total_nfts: group.length,
+      total_ika:  group.reduce((s, l) => s + l.ika_amount, 0),
+      rate:       getDrizzletRate(d),
+    };
+  });
 }
 
-// ─── Number Formatting ────────────────────────────────────────────────────────
-
-export function formatNumber(n: number, decimals = 2): string {
-  if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(decimals)}B`;
-  if (n >= 1_000_000)     return `${(n / 1_000_000).toFixed(decimals)}M`;
-  if (n >= 1_000)         return `${(n / 1_000).toFixed(decimals)}K`;
-  return n.toFixed(decimals);
+export interface ForecastResult {
+  current:    number;
+  day30:      number;
+  day60:      number;
+  season_end: number;
 }
 
-export function formatIka(raw: number): string {
-  return formatNumber(raw, 2);
+export function forecastDrizzlets(
+  currentTotal:    number,
+  totalIkaStaked:  number,
+  totalISUIStaked: number,
+  avgIkaRate:      number,
+  daysLeft:        number
+): ForecastResult {
+  const dailyIka  = (totalIkaStaked  / 10) * avgIkaRate;
+  const dailyISUI = (totalISUIStaked / 10) * 5;
+  const daily     = dailyIka + dailyISUI;
+  return {
+    current:    Math.round(currentTotal),
+    day30:      Math.round(currentTotal + daily * 30),
+    day60:      Math.round(currentTotal + daily * 60),
+    season_end: Math.round(currentTotal + daily * Math.max(daysLeft, 0)),
+  };
 }
 
-export function formatDrizzlets(n: number): string {
-  return formatNumber(n, 0);
+export function formatNumber(value: number, decimals = 0): string {
+  if (value >= 1_000_000_000) return (value / 1_000_000_000).toFixed(2) + 'B';
+  if (value >= 1_000_000) return (value / 1_000_000).toFixed(1) + 'M';
+  if (value >= 1_000)     return (value / 1_000).toFixed(1) + 'K';
+  return value.toFixed(decimals);
 }
 
-export function shortenAddress(addr: string): string {
-  if (!addr || addr.length < 16) return addr;
-  return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
+export function shortenAddress(address: string, chars = 4): string {
+  if (!address) return '';
+  return `${address.slice(0, chars + 2)}...${address.slice(-chars)}`;
 }
