@@ -1,5 +1,5 @@
 'use client';
-import { ImageIcon } from 'lucide-react';
+import { Image } from 'lucide-react';
 import { formatNumber } from '@/lib/calculations';
 import type { NftStats } from '@/lib/serverSupabase';
 
@@ -48,7 +48,7 @@ export default function NftRevealsCard({ data, loading }: Props) {
     <div className="card p-5 animate-slide-up" style={{ animationDelay: '220ms' }}>
       <div className="flex items-center gap-2 mb-4">
         <div className="w-7 h-7 rounded-lg bg-amber-500/20 flex items-center justify-center">
-          <ImageIcon className="w-3.5 h-3.5 text-amber-400" />
+          <Image className="w-3.5 h-3.5 text-amber-400" />
         </div>
         <h3 className="font-display font-semibold text-sm text-white">NFT Reveals</h3>
       </div>
