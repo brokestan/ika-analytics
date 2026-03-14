@@ -130,11 +130,6 @@ export default function RiddlePoolCard({ data, stats, loading }: Props) {
         ))}
       </div>
 
-      {data.fetched_at && (
-        <p className="text-xs text-ika-muted text-right mt-3">
-          Updated {new Date(data.fetched_at).toLocaleTimeString()}
-        </p>
-      )}
     </div>
   );
 }
