@@ -81,7 +81,62 @@ export async function serverGetDrizzletDist() {
   } catch { return { locked_ika_rewards: 0, isui_rewards: 0, unlocked_drizzlets: 0, riddle_rewards: 0 }; }
 }
 
-// ─── Riddle Stats ─────────────────────────────────────────────────────────────
+// ─── Drizzlet Breakdown (for pie chart) ──────────────────────────────────────
+// Queries live data to split locked IKA / locked iSUI / unlocked IKA /
+// unlocked iSUI / NFT reveals / riddle separately
+
+export interface DrizzletBreakdown {
+  locked_ika:    number;  // active IKA lock drizzlets (calculated)
+  unlocked_ika:  number;  // source='unlock'
+  locked_isui:   number;  // active iSUI lock drizzlets (calculated)
+  unlocked_isui: number;  // source='isui_lock'
+  nft_reveals:   number;  // source='nft_reveal'
+  riddle:        number;  // source='riddle'
+}
+
+export async function serverGetDrizzletBreakdown(): Promise<DrizzletBreakdown> {
+  const zero = { locked_ika: 0, unlocked_ika: 0, locked_isui: 0, unlocked_isui: 0, nft_reveals: 0, riddle: 0 };
+  try {
+    const db  = getAdminClient();
+    const now = Date.now();
+
+    const [lockRes, drzRes] = await Promise.all([
+      db.from('locks')
+        .select('asset_type, lock_duration, ika_amount, isui_amount, locked_at')
+        .eq('is_active', true),
+      db.from('drizzlets')
+        .select('source, amount'),
+    ]);
+
+    // Calculate locked drizzlets from active positions
+    let locked_ika  = 0;
+    let locked_isui = 0;
+    for (const lock of (lockRes.data || [])) {
+      const days = Math.floor((now - new Date(lock.locked_at).getTime()) / 86400000);
+      if (lock.asset_type === 'isui') {
+        locked_isui += Math.floor((Number(lock.isui_amount) / 10) * 5 * Math.max(0, days));
+      } else {
+        const rateMap: Record<string, number> = { '0': 5, '1': 1, '7': 2, '30': 3 };
+        const rate = rateMap[String(lock.lock_duration)] ?? 5;
+        locked_ika += Math.floor((Number(lock.ika_amount) / 10) * rate * Math.max(0, days));
+      }
+    }
+
+    // Sum historical drizzlets by source
+    let unlocked_ika = 0, unlocked_isui = 0, nft_reveals = 0, riddle = 0;
+    for (const d of (drzRes.data || [])) {
+      const amt = Number(d.amount);
+      if      (d.source === 'unlock')     unlocked_ika  += amt;
+      else if (d.source === 'isui_lock')  unlocked_isui += amt;
+      else if (d.source === 'nft_reveal') nft_reveals   += amt;
+      else if (d.source === 'riddle')     riddle        += amt;
+    }
+
+    return { locked_ika, unlocked_ika, locked_isui, unlocked_isui, nft_reveals, riddle };
+  } catch { return zero; }
+}
+
+
 
 export interface RiddleStats {
   total_submissions: number;
