@@ -100,12 +100,17 @@ export async function serverGetDrizzletBreakdown(): Promise<DrizzletBreakdown> {
     const db  = getAdminClient();
     const now = Date.now();
 
-    const [lockRes, drzRes] = await Promise.all([
+    const [lockRes, drzRes, riddleRes] = await Promise.all([
       db.from('locks')
         .select('asset_type, lock_duration, ika_amount, isui_amount, locked_at')
-        .eq('is_active', true),
+        .eq('is_active', true)
+        .limit(50000),
       db.from('drizzlets')
-        .select('source, amount'),
+        .select('source, amount')
+        .limit(50000),
+      db.from('wallet_user_tasks')
+        .select('chain_drizzlets')
+        .limit(10000),
     ]);
 
     // Calculate locked drizzlets from active positions
@@ -123,14 +128,17 @@ export async function serverGetDrizzletBreakdown(): Promise<DrizzletBreakdown> {
     }
 
     // Sum historical drizzlets by source
-    let unlocked_ika = 0, unlocked_isui = 0, nft_reveals = 0, riddle = 0;
+    let unlocked_ika = 0, unlocked_isui = 0, nft_reveals = 0;
     for (const d of (drzRes.data || [])) {
       const amt = Number(d.amount);
       if      (d.source === 'unlock')     unlocked_ika  += amt;
       else if (d.source === 'isui_lock')  unlocked_isui += amt;
       else if (d.source === 'nft_reveal') nft_reveals   += amt;
-      else if (d.source === 'riddle')     riddle        += amt;
     }
+
+    // Use chain_drizzlets from wallet_user_tasks for riddle — authoritative on-chain total
+    const riddle = (riddleRes.data || [])
+      .reduce((s: number, r: { chain_drizzlets: number }) => s + Number(r.chain_drizzlets || 0), 0);
 
     return { locked_ika, unlocked_ika, locked_isui, unlocked_isui, nft_reveals, riddle };
   } catch { return zero; }
