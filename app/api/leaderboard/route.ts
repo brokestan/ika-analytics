@@ -18,11 +18,12 @@ function clampInt(val: string, min: number, max: number, fallback: number): numb
 }
 
 function calcIkaDrz(ika: number, days: number, rate: number): number {
-  return Math.floor((ika / 10) * rate * Math.max(0, days));
+  return Math.floor((ika / 10) * rate * Math.max(0, Math.floor(days)));
 }
 
 function calcISUIDrz(isui: number, days: number): number {
-  return isui * Math.max(0, Math.floor(days));
+  // (isuiAmount / 10) * 5 * fullDays  — matches sui-rpc.ts calcISUIDrizzlets
+  return Math.floor((isui / 10) * 5 * Math.max(0, Math.floor(days)));
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -78,7 +79,6 @@ export async function GET(req: NextRequest) {
     let walletQuery = db
       .from('wallets')
       .select('address, ika_locked, isui_locked, active_locks, total_drizzlets', { count: 'exact' })
-      .gt('total_drizzlets', 0)
       .order(sortBy, { ascending: sortAsc });
 
     if (search.length >= 4) {
@@ -110,10 +110,10 @@ export async function GET(req: NextRequest) {
       .in('wallet_address', addresses)
       .eq('is_active', true);
 
-    // ── 5. UserTasks data (riddle solved, community code, chain drizzlets) ────
+    // ── 5. UserTasks data (riddle solved, community code only — NOT chain_drizzlets) ──
     const { data: taskRows } = await db
       .from('wallet_user_tasks')
-      .select('wallet_address, riddle_one_solved, riddle_two_solved, riddle_three_solved, community_code, chain_drizzlets')
+      .select('wallet_address, riddle_one_solved, riddle_two_solved, riddle_three_solved, community_code')
       .in('wallet_address', addresses);
 
     // ── 6. Compute per-wallet drizzlet breakdown ──────────────────────────────
@@ -152,11 +152,10 @@ export async function GET(req: NextRequest) {
 
     // Index task rows
     const taskByWallet: Record<string, {
-      riddle_one_solved: boolean;
-      riddle_two_solved: boolean;
+      riddle_one_solved:   boolean;
+      riddle_two_solved:   boolean;
       riddle_three_solved: boolean;
-      community_code: string | null;
-      chain_drizzlets: number;
+      community_code:      string | null;
     }> = {};
     for (const t of (taskRows || [])) {
       taskByWallet[t.wallet_address] = {
@@ -164,7 +163,6 @@ export async function GET(req: NextRequest) {
         riddle_two_solved:   !!t.riddle_two_solved,
         riddle_three_solved: !!t.riddle_three_solved,
         community_code:      t.community_code || null,
-        chain_drizzlets:     Number(t.chain_drizzlets || 0),
       };
     }
 
@@ -194,18 +192,16 @@ export async function GET(req: NextRequest) {
       const locked   = lockedByWallet[addr] || { ika: 0, isui: 0 };
       const task     = taskByWallet[addr];
 
-      // Riddle drizzlets: use chain_drizzlets (authoritative on-chain) if higher than DB sum
-      const drzRiddle = task
-        ? Math.max(task.chain_drizzlets, drz.riddle)
-        : drz.riddle;
-
+      // Riddle drizzlets: DB only (source='riddle', 31 drz per submission)
+      // chain_drizzlets = ALL task drizzlets (riddle+NFT+community) — never use for riddle column
+      const drzRiddle     = drz.riddle;
+      const drzNft        = drz.nft_reveal;
       const lockedTotal   = locked.ika + locked.isui;
-      // Unlocked = all realized/claimable drizzlets: staking unlocks + NFT reveals + riddle submissions
-      const unlockedTotal = drz.unlock + drz.isui_lock + drz.nft_reveal + drzRiddle;
+      // Unlocked = all realized drizzlets: staking unlocks + NFT reveals + riddle
+      const unlockedTotal = drz.unlock + drz.isui_lock + drzNft + drzRiddle;
       const drzFromIka    = locked.ika  + drz.unlock;
       const drzFromIsui   = locked.isui + drz.isui_lock;
-      const drzNft        = drz.nft_reveal;
-      // Total = locked (still earning silently) + unlocked (all realized sources)
+      // Total = locked (silently earning) + unlocked (all realized sources)
       const total         = lockedTotal + unlockedTotal;
 
       const baseRank = from + i + 1;
