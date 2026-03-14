@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import {
   Coins, Droplets, Lock, Unlock, LayoutGrid,
   Users, Sparkles, TrendingUp, Clock, AlertCircle,
@@ -26,7 +27,7 @@ import { formatNumber } from '@/lib/calculations';
 
 export const revalidate = 300;
 
-function SectionLabel({ children }: { children: React.ReactNode }) {
+function SectionLabel({ children }: { children: ReactNode }) {
   return (
     <p className="text-[11px] font-semibold text-ika-muted tracking-widest uppercase mb-3 mt-2">
       {children}
