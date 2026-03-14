@@ -251,19 +251,7 @@ export interface Prices {
 }
 
 export async function serverGetPrices(): Promise<Prices> {
-  try {
-    const ikaId = process.env.IKA_COINGECKO_ID || 'ika';
-    const res = await fetch(
-      `https://api.coingecko.com/api/v3/simple/price?ids=sui%2C${ikaId}&vs_currencies=usd`,
-      { next: { revalidate: 300 } } as any
-    );
-    if (!res.ok) return { ika: null, sui: null };
-    const json = await res.json() as Record<string, { usd?: number }>;
-    return {
-      ika: json[ikaId]?.usd ?? null,
-      sui: json['sui']?.usd   ?? null,
-    };
-  } catch { return { ika: null, sui: null }; }
+  return { ika: null, sui: null };
 }
 
 // ─── Checkpoint / Refresh Log helpers (used by indexer) ──────────────────────
