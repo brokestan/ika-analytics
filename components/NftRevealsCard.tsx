@@ -5,6 +5,7 @@ interface NftStats {
   total_reveals:   number;
   total_drizzlets: number;
   avg_per_reveal:  number;
+  unique_wallets:  number;
 }
 interface Props {
   data:     NftStats | null;
@@ -25,25 +26,32 @@ export default function NftRevealsCard({ data, loading }: Props) {
 
   const stats = [
     {
-      label:   'NFTs Revealed',
-      value:   data.total_reveals.toLocaleString(),
-      sub:     'total Squid Maiden reveals',
-      color:   'text-amber-400',
-      bg:      'bg-amber-500/5 border-amber-500/15',
+      label: 'NFTs Revealed',
+      value: data.total_reveals.toLocaleString(),
+      sub:   'total Squid Maiden reveals',
+      color: 'text-amber-400',
+      bg:    'bg-amber-500/5 border-amber-500/15',
     },
     {
-      label:   'Drizzlets Earned',
-      value:   formatNumber(data.total_drizzlets, 0),
-      sub:     'from NFT reveals',
-      color:   'text-ika-pink',
-      bg:      'bg-ika-pink/5 border-ika-pink/15',
+      label: 'Unique Wallets',
+      value: data.unique_wallets.toLocaleString(),
+      sub:   'wallets that revealed',
+      color: 'text-cyan-400',
+      bg:    'bg-cyan-500/5 border-cyan-500/15',
     },
     {
-      label:   'Avg per Reveal',
-      value:   data.avg_per_reveal.toLocaleString(),
-      sub:     'drizzlets per NFT',
-      color:   'text-emerald-400',
-      bg:      'bg-emerald-500/5 border-emerald-500/15',
+      label: 'Drizzlets Earned',
+      value: formatNumber(data.total_drizzlets, 0),
+      sub:   'from NFT reveals',
+      color: 'text-ika-pink',
+      bg:    'bg-ika-pink/5 border-ika-pink/15',
+    },
+    {
+      label: 'Avg per Reveal',
+      value: data.avg_per_reveal.toLocaleString(),
+      sub:   'drizzlets per NFT',
+      color: 'text-emerald-400',
+      bg:    'bg-emerald-500/5 border-emerald-500/15',
     },
   ];
 
