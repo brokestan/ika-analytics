@@ -37,7 +37,7 @@ async function rpcCall<T>(method: string, params: unknown[]): Promise<T> {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
-    next: { revalidate: 0 },
+    cache: 'no-store' as RequestInit['cache'],
   });
   if (!res.ok) throw new Error(`RPC HTTP ${res.status}`);
   const json = await res.json() as { result?: T; error?: { message: string } };
