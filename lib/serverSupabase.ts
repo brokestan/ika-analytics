@@ -78,6 +78,8 @@ export interface DrizzletBreakdown {
   unlocked_isui: number;
   nft_reveals:   number;
   riddle:        number;
+  riddle_sub:    number;
+  riddle_pools:  number;
 }
 
 export async function serverGetDrizzletBreakdown(): Promise<DrizzletBreakdown> {
@@ -120,13 +122,17 @@ export async function serverGetDrizzletBreakdown(): Promise<DrizzletBreakdown> {
       from += pageSize;
     }
 
+    const riddle_sub   = Number(a?.riddle_sub   || 0);
+    const riddle_pools = Number(a?.riddle_pools || 0);
     return {
       locked_ika,
       unlocked_ika:  Number(a?.unlocked_ika  || 0),
       locked_isui,
       unlocked_isui: Number(a?.unlocked_isui || 0),
       nft_reveals:   Number(a?.nft_reveals   || 0),
-      riddle:        Number(a?.riddle_sub    || 0) + Number(a?.riddle_pools || 0),
+      riddle:        riddle_sub + riddle_pools,
+      riddle_sub,
+      riddle_pools,
     };
   } catch { return zero; }
 }
