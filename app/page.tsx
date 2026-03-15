@@ -1,8 +1,12 @@
 import type { ReactNode } from 'react';
-import { Clock, AlertCircle } from 'lucide-react';
+import {
+  Coins, Droplets, Lock, Unlock, LayoutGrid,
+  Users, Sparkles, TrendingUp, Clock, AlertCircle,
+} from 'lucide-react';
 import MetricCard          from '@/components/MetricCard';
 import DrizzletPieChart    from '@/components/DrizzletPieChart';
 import LockDistributionChart from '@/components/LockDistributionChart';
+import LockedUnlockedChart  from '@/components/LockedUnlockedChart';
 import ForecastCard        from '@/components/ForecastCard';
 import RiddlePoolCard      from '@/components/RiddlePoolCard';
 import NftRevealsCard      from '@/components/NftRevealsCard';
@@ -22,7 +26,7 @@ import {
 } from '@/lib/serverSupabase';
 import { formatNumber } from '@/lib/calculations';
 
-export const revalidate = 0;
+export const revalidate = 300;
 
 function SectionLabel({ children }: { children: ReactNode }) {
   return (
@@ -107,7 +111,7 @@ export default async function DashboardPage() {
         <MetricCard
           title="Total IKA Staked"
           value={m?.total_ika_staked ?? 0}
-          iconName="Coins"
+          icon={Coins}
           iconColor="text-ika-pink"
           accent
           suffix=" IKA"
@@ -118,7 +122,7 @@ export default async function DashboardPage() {
         <MetricCard
           title="Total iSUI Staked"
           value={m?.total_isui_staked ?? 0}
-          iconName="Droplets"
+          icon={Droplets}
           iconColor="text-violet-400"
           suffix=" iSUI"
           subtitle={isuiUsd ? fmt$((m?.total_isui_staked ?? 0) * isuiUsd) : undefined}
@@ -128,7 +132,7 @@ export default async function DashboardPage() {
         <MetricCard
           title="Locked NFTs"
           value={m?.total_locked_nfts ?? 0}
-          iconName="Lock"
+          icon={Lock}
           iconColor="text-amber-400"
           decimals={0}
           subtitle="active staking positions"
@@ -138,7 +142,7 @@ export default async function DashboardPage() {
         <MetricCard
           title="Unlocked NFTs"
           value={m?.total_unlocked_nfts ?? 0}
-          iconName="Unlock"
+          icon={Unlock}
           iconColor="text-emerald-400"
           decimals={0}
           subtitle="completed positions"
@@ -148,7 +152,7 @@ export default async function DashboardPage() {
         <MetricCard
           title="Total Staking NFTs"
           value={m?.total_staking_nfts ?? 0}
-          iconName="LayoutGrid"
+          icon={LayoutGrid}
           iconColor="text-cyan-400"
           decimals={0}
           subtitle="all-time minted"
@@ -158,7 +162,7 @@ export default async function DashboardPage() {
         <MetricCard
           title="Unique Staking Wallets"
           value={m?.unique_staking_wallets ?? 0}
-          iconName="Users"
+          icon={Users}
           iconColor="text-blue-400"
           decimals={0}
           loading={loading}
@@ -167,7 +171,7 @@ export default async function DashboardPage() {
         <MetricCard
           title="Total Drizzlets Earned"
           value={m?.total_drizzlets_earned ?? 0}
-          iconName="Sparkles"
+          icon={Sparkles}
           iconColor="text-ika-pink"
           accent
           loading={loading}
@@ -176,7 +180,7 @@ export default async function DashboardPage() {
         <MetricCard
           title="Season Forecast (45d)"
           value={day45}
-          iconName="TrendingUp"
+          icon={TrendingUp}
           iconColor="text-emerald-400"
           subtitle="est. season end projection"
           loading={loading}
@@ -190,6 +194,7 @@ export default async function DashboardPage() {
         <DrizzletPieChart data={enrichedDrizzDist} loading={loading} />
         <LockDistributionChart data={lockDist} loading={loading} />
       </div>
+      <LockedUnlockedChart data={enrichedDrizzDist} loading={loading} />
 
       {/* ── Riddle + NFT + Community ───────────────────────────────────────── */}
       <SectionLabel>Riddle &amp; Community</SectionLabel>
