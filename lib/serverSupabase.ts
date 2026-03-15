@@ -69,29 +69,15 @@ export async function serverGetLockDist() {
   } catch { return []; }
 }
 
-export async function serverGetDrizzletDist() {
-  try {
-    const db = getAdminClient();
-    const { data } = await db
-      .from('drizzlet_distribution_cache')
-      .select('*')
-      .eq('id', 'main')
-      .single();
-    return data ?? { locked_ika_rewards: 0, isui_rewards: 0, unlocked_drizzlets: 0, riddle_rewards: 0 };
-  } catch { return { locked_ika_rewards: 0, isui_rewards: 0, unlocked_drizzlets: 0, riddle_rewards: 0 }; }
-}
-
-// ─── Drizzlet Breakdown (for pie chart) ──────────────────────────────────────
-// Queries live data to split locked IKA / locked iSUI / unlocked IKA /
-// unlocked iSUI / NFT reveals / riddle separately
+// ─── Drizzlet Breakdown (pie chart) ──────────────────────────────────────────
 
 export interface DrizzletBreakdown {
-  locked_ika:    number;  // active IKA lock drizzlets (calculated)
-  unlocked_ika:  number;  // source='unlock'
-  locked_isui:   number;  // active iSUI lock drizzlets (calculated)
-  unlocked_isui: number;  // source='isui_lock'
-  nft_reveals:   number;  // source='nft_reveal'
-  riddle:        number;  // source='riddle'
+  locked_ika:    number;
+  unlocked_ika:  number;
+  locked_isui:   number;
+  unlocked_isui: number;
+  nft_reveals:   number;
+  riddle:        number;
 }
 
 export async function serverGetDrizzletBreakdown(): Promise<DrizzletBreakdown> {
@@ -100,7 +86,8 @@ export async function serverGetDrizzletBreakdown(): Promise<DrizzletBreakdown> {
     const db  = getAdminClient();
     const now = Date.now();
 
-    const [lockRes, drzRes, riddleRes] = await Promise.all([
+    // All queries with high limits — Supabase default cap is 1000 rows
+    const [lockRes, drzRes, nftRes, poolRes] = await Promise.all([
       db.from('locks')
         .select('asset_type, lock_duration, ika_amount, isui_amount, locked_at')
         .eq('is_active', true)
@@ -108,9 +95,11 @@ export async function serverGetDrizzletBreakdown(): Promise<DrizzletBreakdown> {
       db.from('drizzlets')
         .select('source, amount')
         .limit(50000),
-      db.from('wallet_user_tasks')
-        .select('chain_drizzlets')
+      db.from('nft_reveals')
+        .select('drizzlets_earned')
         .limit(10000),
+      db.from('riddle_pools')
+        .select('amount'),
     ]);
 
     // Calculate locked drizzlets from active positions
@@ -127,24 +116,30 @@ export async function serverGetDrizzletBreakdown(): Promise<DrizzletBreakdown> {
       }
     }
 
-    // Sum historical drizzlets by source
-    let unlocked_ika = 0, unlocked_isui = 0, nft_reveals = 0;
+    // Sum historical drizzlets by source from drizzlets table
+    let unlocked_ika = 0, unlocked_isui = 0, riddle_submissions = 0;
     for (const d of (drzRes.data || [])) {
       const amt = Number(d.amount);
-      if      (d.source === 'unlock')     unlocked_ika  += amt;
-      else if (d.source === 'isui_lock')  unlocked_isui += amt;
-      else if (d.source === 'nft_reveal') nft_reveals   += amt;
+      if      (d.source === 'unlock')    unlocked_ika       += amt;
+      else if (d.source === 'isui_lock') unlocked_isui      += amt;
+      else if (d.source === 'riddle')    riddle_submissions += amt;
     }
 
-    // Use chain_drizzlets from wallet_user_tasks for riddle — authoritative on-chain total
-    const riddle = (riddleRes.data || [])
-      .reduce((s: number, r: { chain_drizzlets: number }) => s + Number(r.chain_drizzlets || 0), 0);
+    // NFT reveals — from nft_reveals table (accurate drizzlets_earned per NFT)
+    const nft_reveals = (nftRes.data || [])
+      .reduce((s: number, r: { drizzlets_earned: number }) => s + Number(r.drizzlets_earned || 0), 0);
+
+    // Riddle = submissions (31 drz each) + all 3 riddle prize pools (locked on-chain)
+    const riddle_pools = (poolRes.data || [])
+      .reduce((s: number, r: { amount: number }) => s + Number(r.amount || 0), 0);
+
+    const riddle = riddle_submissions + riddle_pools;
 
     return { locked_ika, unlocked_ika, locked_isui, unlocked_isui, nft_reveals, riddle };
   } catch { return zero; }
 }
 
-
+// ─── Riddle Stats ─────────────────────────────────────────────────────────────
 
 export interface RiddleStats {
   total_submissions: number;
@@ -159,7 +154,9 @@ export async function serverGetRiddleStats(): Promise<RiddleStats> {
     const db = getAdminClient();
     const [subRes, taskRes] = await Promise.all([
       db.from('riddle_submissions').select('id', { count: 'exact', head: true }),
-      db.from('wallet_user_tasks').select('riddle_one_solved, riddle_two_solved, riddle_three_solved'),
+      db.from('wallet_user_tasks')
+        .select('riddle_one_solved, riddle_two_solved, riddle_three_solved')
+        .limit(10000),
     ]);
     const tasks = taskRes.data || [];
     return {
@@ -188,8 +185,8 @@ export async function serverGetNftStats(): Promise<NftStats> {
       .from('nft_reveals')
       .select('wallet_address, drizzlets_earned')
       .limit(10000);
-    const rows         = data || [];
-    const total        = rows.reduce((s: number, r: { drizzlets_earned: number }) => s + Number(r.drizzlets_earned), 0);
+    const rows          = data || [];
+    const total         = rows.reduce((s: number, r: { drizzlets_earned: number }) => s + Number(r.drizzlets_earned), 0);
     const uniqueWallets = new Set(rows.map((r: { wallet_address: string }) => r.wallet_address)).size;
     return {
       total_reveals:   rows.length,
@@ -256,7 +253,7 @@ export async function serverGetTopEarners(limit = 3): Promise<TopEarner[]> {
   } catch { return []; }
 }
 
-// ─── Token Prices (CoinGecko) ─────────────────────────────────────────────────
+// ─── Token Prices ─────────────────────────────────────────────────────────────
 
 export interface Prices {
   ika: number | null;
@@ -267,7 +264,7 @@ export async function serverGetPrices(): Promise<Prices> {
   return { ika: null, sui: null };
 }
 
-// ─── Checkpoint / Refresh Log helpers (used by indexer) ──────────────────────
+// ─── Indexer helpers (used by route.ts) ──────────────────────────────────────
 
 export async function getCheckpoint(db: SupabaseClient, eventType: string) {
   const { data } = await db
