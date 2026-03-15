@@ -2,6 +2,7 @@
 import { PieChart, Pie, Cell, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { Droplets } from 'lucide-react';
 import { formatNumber } from '@/lib/calculations';
+
 interface DrizzletBreakdown {
   locked_ika:    number;
   unlocked_ika:  number;
@@ -9,16 +10,34 @@ interface DrizzletBreakdown {
   unlocked_isui: number;
   nft_reveals:   number;
   riddle:        number;
+  riddle_sub:    number;
+  riddle_pools:  number;
 }
 
 const SEGMENTS: { key: keyof DrizzletBreakdown; label: string; color: string }[] = [
-  { key: 'locked_ika',    label: 'Locked IKA',    color: '#FF2D78' },
-  { key: 'unlocked_ika',  label: 'Unlocked IKA',  color: '#FB7185' },
-  { key: 'locked_isui',   label: 'Locked iSUI',   color: '#4DA2FF' },
-  { key: 'unlocked_isui', label: 'Unlocked iSUI', color: '#818CF8' },
-  { key: 'nft_reveals',   label: 'NFT Reveals',   color: '#F59E0B' },
-  { key: 'riddle',        label: 'Riddle',         color: '#EAB308' },
+  { key: 'locked_ika',    label: 'Locked IKA',              color: '#FF2D78' },
+  { key: 'unlocked_ika',  label: 'Unlocked IKA',            color: '#FB7185' },
+  { key: 'locked_isui',   label: 'Locked iSUI',             color: '#4DA2FF' },
+  { key: 'unlocked_isui', label: 'Unlocked iSUI',           color: '#818CF8' },
+  { key: 'nft_reveals',   label: 'NFT Reveals',             color: '#F59E0B' },
+  { key: 'riddle',        label: 'Riddle (Pools+Sub)',       color: '#EAB308' },
 ];
+
+// Smart percentage formatter — shows enough decimals for small values
+function fmtPct(pct: number): string {
+  if (pct >= 1)    return pct.toFixed(1) + '%';
+  if (pct >= 0.1)  return pct.toFixed(2) + '%';
+  if (pct >= 0.01) return pct.toFixed(3) + '%';
+  return '<0.01%';
+}
+
+// Smart value formatter — more precision for smaller values
+function fmtVal(n: number): string {
+  if (n >= 1_000_000_000) return (n / 1_000_000_000).toFixed(3) + 'B';
+  if (n >= 1_000_000)     return (n / 1_000_000).toFixed(3) + 'M';
+  if (n >= 1_000)         return (n / 1_000).toFixed(1) + 'K';
+  return n.toLocaleString();
+}
 
 interface Props {
   data:     DrizzletBreakdown | null;
@@ -33,8 +52,8 @@ const CustomTooltip = ({ active, payload }: {
   return (
     <div className="bg-ika-card border border-ika-border rounded-xl p-3 shadow-ika">
       <p className="text-xs text-ika-dim mb-0.5">{payload[0].name}</p>
-      <p className="font-mono font-bold text-white text-sm">{formatNumber(payload[0].value, 0)}</p>
-      <p className="text-xs text-ika-muted">{payload[0].payload.pct.toFixed(1)}% of total</p>
+      <p className="font-mono font-bold text-white text-sm">{fmtVal(payload[0].value)}</p>
+      <p className="text-xs text-ika-muted">{fmtPct(payload[0].payload.pct)} of total</p>
     </div>
   );
 };
@@ -50,7 +69,7 @@ const CustomLegend = ({
         <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: entry.color }} />
         <span className="text-xs text-ika-dim">{entry.value}</span>
         <span className="text-xs font-mono font-bold" style={{ color: entry.color }}>
-          {entry.payload.pct.toFixed(1)}%
+          {fmtPct(entry.payload.pct)}
         </span>
       </div>
     ))}
