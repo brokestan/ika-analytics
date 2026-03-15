@@ -1,18 +1,15 @@
 import type { ReactNode } from 'react';
-import {
-  Coins, Droplets, Lock, Unlock, LayoutGrid,
-  Users, Sparkles, TrendingUp, Clock, AlertCircle,
-} from 'lucide-react';
-import MetricCard          from '@/components/MetricCard';
-import DrizzletPieChart    from '@/components/DrizzletPieChart';
+import { Clock, AlertCircle } from 'lucide-react';
+import MetricCard            from '@/components/MetricCard';
+import DrizzletPieChart      from '@/components/DrizzletPieChart';
 import LockDistributionChart from '@/components/LockDistributionChart';
-import LockedUnlockedChart  from '@/components/LockedUnlockedChart';
-import ForecastCard        from '@/components/ForecastCard';
-import RiddlePoolCard      from '@/components/RiddlePoolCard';
-import NftRevealsCard      from '@/components/NftRevealsCard';
-import CommunityCodeCard   from '@/components/CommunityCodeCard';
-import TopEarnersCard      from '@/components/TopEarnersCard';
-import RefreshButton       from '@/components/RefreshButton';
+import LockedUnlockedChart   from '@/components/LockedUnlockedChart';
+import ForecastCard          from '@/components/ForecastCard';
+import RiddlePoolCard        from '@/components/RiddlePoolCard';
+import NftRevealsCard        from '@/components/NftRevealsCard';
+import CommunityCodeCard     from '@/components/CommunityCodeCard';
+import TopEarnersCard        from '@/components/TopEarnersCard';
+import RefreshButton         from '@/components/RefreshButton';
 import {
   serverGetDashboard,
   serverGetRiddlePools,
@@ -26,7 +23,7 @@ import {
 } from '@/lib/serverSupabase';
 import { formatNumber } from '@/lib/calculations';
 
-export const revalidate = 300;
+export const revalidate = 0;
 
 function SectionLabel({ children }: { children: ReactNode }) {
   return (
@@ -54,18 +51,17 @@ export default async function DashboardPage() {
   const hasIndexed = !!m?.last_indexed_at;
 
   // Compute 45-day forecast for season forecast metric card
-  const current = m?.total_drizzlets_earned  ?? 0;
-  const day30   = m?.forecast_drizzlets_30d  ?? 0;
-  const day60   = m?.forecast_drizzlets_60d  ?? 0;
+  const current   = m?.total_drizzlets_earned ?? 0;
+  const day30     = m?.forecast_drizzlets_30d ?? 0;
+  const day60     = m?.forecast_drizzlets_60d ?? 0;
   const dailyRate = (day30 - current) / 30;
-  const day45   = Math.round(current + dailyRate * 45);
+  const day45     = Math.round(current + dailyRate * 45);
 
-  // USD value helpers (graceful — only shown if price is available)
-  const ikaUsd  = prices.ika;
-  const isuiUsd = prices.sui; // iSUI ≈ SUI price
+  // USD value helpers — only shown if price available
+  const ikaUsd  = prices?.ika  ?? null;
+  const isuiUsd = prices?.sui  ?? null;
   const fmt$    = (n: number) => `$${formatNumber(n, 1)}`;
 
-  // Pass breakdown directly to pie chart — all 6 sources already split correctly
   const enrichedDrizzDist = drizzBreakdown ?? null;
 
   return (
@@ -85,6 +81,7 @@ export default async function DashboardPage() {
                 {new Date(m.last_indexed_at).toLocaleDateString('en-US', {
                   month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
                 })}
+                {' UTC'}
               </span>
             )}
           </p>
@@ -111,18 +108,18 @@ export default async function DashboardPage() {
         <MetricCard
           title="Total IKA Staked"
           value={m?.total_ika_staked ?? 0}
-          icon={Coins}
+          iconName="Coins"
           iconColor="text-ika-pink"
           accent
           suffix=" IKA"
-          subtitle={ikaUsd ? fmt$(( m?.total_ika_staked ?? 0) * ikaUsd) : undefined}
+          subtitle={ikaUsd ? fmt$((m?.total_ika_staked ?? 0) * ikaUsd) : undefined}
           loading={loading}
           animationDelay={0}
         />
         <MetricCard
           title="Total iSUI Staked"
           value={m?.total_isui_staked ?? 0}
-          icon={Droplets}
+          iconName="Droplets"
           iconColor="text-violet-400"
           suffix=" iSUI"
           subtitle={isuiUsd ? fmt$((m?.total_isui_staked ?? 0) * isuiUsd) : undefined}
@@ -132,7 +129,7 @@ export default async function DashboardPage() {
         <MetricCard
           title="Locked NFTs"
           value={m?.total_locked_nfts ?? 0}
-          icon={Lock}
+          iconName="Lock"
           iconColor="text-amber-400"
           decimals={0}
           subtitle="active staking positions"
@@ -142,7 +139,7 @@ export default async function DashboardPage() {
         <MetricCard
           title="Unlocked NFTs"
           value={m?.total_unlocked_nfts ?? 0}
-          icon={Unlock}
+          iconName="Unlock"
           iconColor="text-emerald-400"
           decimals={0}
           subtitle="completed positions"
@@ -152,7 +149,7 @@ export default async function DashboardPage() {
         <MetricCard
           title="Total Staking NFTs"
           value={m?.total_staking_nfts ?? 0}
-          icon={LayoutGrid}
+          iconName="LayoutGrid"
           iconColor="text-cyan-400"
           decimals={0}
           subtitle="all-time minted"
@@ -162,7 +159,7 @@ export default async function DashboardPage() {
         <MetricCard
           title="Unique Staking Wallets"
           value={m?.unique_staking_wallets ?? 0}
-          icon={Users}
+          iconName="Users"
           iconColor="text-blue-400"
           decimals={0}
           loading={loading}
@@ -171,7 +168,7 @@ export default async function DashboardPage() {
         <MetricCard
           title="Total Drizzlets Earned"
           value={m?.total_drizzlets_earned ?? 0}
-          icon={Sparkles}
+          iconName="Sparkles"
           iconColor="text-ika-pink"
           accent
           loading={loading}
@@ -180,7 +177,7 @@ export default async function DashboardPage() {
         <MetricCard
           title="Season Forecast (45d)"
           value={day45}
-          icon={TrendingUp}
+          iconName="TrendingUp"
           iconColor="text-emerald-400"
           subtitle="est. season end projection"
           loading={loading}
@@ -188,7 +185,7 @@ export default async function DashboardPage() {
         />
       </div>
 
-      {/* ── Charts ────────────────────────────────────────────────────────── */}
+      {/* ── Distribution Charts ────────────────────────────────────────────── */}
       <SectionLabel>Distribution</SectionLabel>
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-5">
         <DrizzletPieChart data={enrichedDrizzDist} loading={loading} />
@@ -221,4 +218,4 @@ export default async function DashboardPage() {
 
     </div>
   );
-}
+    }
