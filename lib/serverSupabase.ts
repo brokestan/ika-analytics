@@ -83,7 +83,7 @@ export interface DrizzletBreakdown {
 }
 
 export async function serverGetDrizzletBreakdown(): Promise<DrizzletBreakdown> {
-  const zero = { locked_ika: 0, unlocked_ika: 0, locked_isui: 0, unlocked_isui: 0, nft_reveals: 0, riddle: 0 };
+  const zero = { locked_ika: 0, unlocked_ika: 0, locked_isui: 0, unlocked_isui: 0, nft_reveals: 0, riddle: 0, riddle_sub: 0, riddle_pools: 0 };
   try {
     const db  = getAdminClient();
     const now = Date.now();
