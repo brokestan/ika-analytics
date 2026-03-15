@@ -86,56 +86,49 @@ export async function serverGetDrizzletBreakdown(): Promise<DrizzletBreakdown> {
     const db  = getAdminClient();
     const now = Date.now();
 
-    // All queries with high limits — Supabase default cap is 1000 rows
-    const [lockRes, drzRes, nftRes, poolRes] = await Promise.all([
-      db.from('locks')
+    // Use RPC aggregate for historical drizzlets — avoids PostgREST 1000-row cap
+    const { data: agg } = await db.rpc('get_drizzlet_breakdown');
+    const a = agg as {
+      unlocked_ika: number;
+      unlocked_isui: number;
+      nft_reveals: number;
+      riddle_sub: number;
+      riddle_pools: number;
+    };
+
+    // Still need active locks for locked drizzlet calculation
+    // Fetch in pages to bypass row limit
+    let locked_ika = 0, locked_isui = 0;
+    let from = 0;
+    const pageSize = 1000;
+    while (true) {
+      const { data: page } = await db.from('locks')
         .select('asset_type, lock_duration, ika_amount, isui_amount, locked_at')
         .eq('is_active', true)
-        .limit(50000),
-      db.from('drizzlets')
-        .select('source, amount')
-        .limit(50000),
-      db.from('nft_reveals')
-        .select('drizzlets_earned')
-        .limit(10000),
-      db.from('riddle_pools')
-        .select('amount'),
-    ]);
-
-    // Calculate locked drizzlets from active positions
-    let locked_ika  = 0;
-    let locked_isui = 0;
-    for (const lock of (lockRes.data || [])) {
-      const days = Math.floor((now - new Date(lock.locked_at).getTime()) / 86400000);
-      if (lock.asset_type === 'isui') {
-        locked_isui += Math.floor((Number(lock.isui_amount) / 10) * 5 * Math.max(0, days));
-      } else {
-        const rateMap: Record<string, number> = { '0': 5, '1': 1, '7': 2, '30': 3 };
-        const rate = rateMap[String(lock.lock_duration)] ?? 5;
-        locked_ika += Math.floor((Number(lock.ika_amount) / 10) * rate * Math.max(0, days));
+        .range(from, from + pageSize - 1);
+      if (!page || page.length === 0) break;
+      for (const lock of page) {
+        const days = Math.floor((now - new Date(lock.locked_at).getTime()) / 86400000);
+        if (lock.asset_type === 'isui') {
+          locked_isui += Math.floor((Number(lock.isui_amount) / 10) * 5 * Math.max(0, days));
+        } else {
+          const rateMap: Record<string, number> = { '0': 5, '1': 1, '7': 2, '30': 3 };
+          const rate = rateMap[String(lock.lock_duration)] ?? 5;
+          locked_ika += Math.floor((Number(lock.ika_amount) / 10) * rate * Math.max(0, days));
+        }
       }
+      if (page.length < pageSize) break;
+      from += pageSize;
     }
 
-    // Sum historical drizzlets by source from drizzlets table
-    let unlocked_ika = 0, unlocked_isui = 0, riddle_submissions = 0;
-    for (const d of (drzRes.data || [])) {
-      const amt = Number(d.amount);
-      if      (d.source === 'unlock')    unlocked_ika       += amt;
-      else if (d.source === 'isui_lock') unlocked_isui      += amt;
-      else if (d.source === 'riddle')    riddle_submissions += amt;
-    }
-
-    // NFT reveals — from nft_reveals table (accurate drizzlets_earned per NFT)
-    const nft_reveals = (nftRes.data || [])
-      .reduce((s: number, r: { drizzlets_earned: number }) => s + Number(r.drizzlets_earned || 0), 0);
-
-    // Riddle = submissions (31 drz each) + all 3 riddle prize pools (locked on-chain)
-    const riddle_pools = (poolRes.data || [])
-      .reduce((s: number, r: { amount: number }) => s + Number(r.amount || 0), 0);
-
-    const riddle = riddle_submissions + riddle_pools;
-
-    return { locked_ika, unlocked_ika, locked_isui, unlocked_isui, nft_reveals, riddle };
+    return {
+      locked_ika,
+      unlocked_ika:  Number(a?.unlocked_ika  || 0),
+      locked_isui,
+      unlocked_isui: Number(a?.unlocked_isui || 0),
+      nft_reveals:   Number(a?.nft_reveals   || 0),
+      riddle:        Number(a?.riddle_sub    || 0) + Number(a?.riddle_pools || 0),
+    };
   } catch { return zero; }
 }
 
@@ -181,22 +174,17 @@ export interface NftStats {
 export async function serverGetNftStats(): Promise<NftStats> {
   try {
     const db = getAdminClient();
-    const { data } = await db
-      .from('nft_reveals')
-      .select('wallet_address, drizzlets_earned')
-      .limit(10000);
-    const rows          = data || [];
-    const total         = rows.reduce((s: number, r: { drizzlets_earned: number }) => s + Number(r.drizzlets_earned), 0);
-    const uniqueWallets = new Set(rows.map((r: { wallet_address: string }) => r.wallet_address)).size;
+    // Aggregate via SQL to avoid row cap
+    const { data } = await db.rpc('get_nft_stats');
+    const d = data as { total_reveals: number; total_drizzlets: number; avg_per_reveal: number; unique_wallets: number };
     return {
-      total_reveals:   rows.length,
-      total_drizzlets: total,
-      avg_per_reveal:  rows.length > 0 ? Math.round(total / rows.length) : 0,
-      unique_wallets:  uniqueWallets,
+      total_reveals:   Number(d?.total_reveals   || 0),
+      total_drizzlets: Number(d?.total_drizzlets || 0),
+      avg_per_reveal:  Number(d?.avg_per_reveal  || 0),
+      unique_wallets:  Number(d?.unique_wallets  || 0),
     };
   } catch { return { total_reveals: 0, total_drizzlets: 0, avg_per_reveal: 0, unique_wallets: 0 }; }
 }
-
 // ─── Community Code Stats ─────────────────────────────────────────────────────
 
 export interface CodeStats {
@@ -235,22 +223,16 @@ export interface TopEarner {
   total_drizzlets: number;
 }
 
-export async function serverGetTopEarners(limit = 3): Promise<TopEarner[]> {
+export async function serverGetCodeStats(): Promise<CodeStats> {
   try {
     const db = getAdminClient();
-    const { data } = await db
-      .from('wallets')
-      .select('address, ika_locked, total_drizzlets')
-      .gt('total_drizzlets', 0)
-      .order('total_drizzlets', { ascending: false })
-      .limit(limit);
-    return (data || []).map((w: { address: string; ika_locked: number; total_drizzlets: number }, i: number) => ({
-      rank:            i + 1,
-      address:         w.address,
-      ika_locked:      Number(w.ika_locked),
-      total_drizzlets: Number(w.total_drizzlets),
-    }));
-  } catch { return []; }
+    const { data } = await db.rpc('get_code_stats');
+    const d = data as { wallets_with_code: number; unique_codes: number };
+    return {
+      wallets_with_code: Number(d?.wallets_with_code || 0),
+      unique_codes:      Number(d?.unique_codes      || 0),
+    };
+  } catch { return { wallets_with_code: 0, unique_codes: 0 }; }
 }
 
 // ─── Token Prices ─────────────────────────────────────────────────────────────
