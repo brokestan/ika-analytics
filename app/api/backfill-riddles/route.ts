@@ -15,7 +15,7 @@ import { createClient } from '@supabase/supabase-js';
 
 const V4_PKG        = '0x765307507478ca630ddc0c44ab3bb9e83c3aa98aea2777a4f0aea0ade4a853f8';
 const RPC_URL       = process.env.SUI_RPC_URL || 'https://fullnode.mainnet.sui.io:443';
-const WALLETS_PER_RUN = 10;   // process 10 wallets per Vercel invocation
+const WALLETS_PER_RUN = 5;   // process 10 wallets per Vercel invocation
 const TIME_BUDGET_MS  = 45_000;
 
 function getDB() {
@@ -105,18 +105,32 @@ async function fetchWalletRiddleSubmissions(walletAddress: string): Promise<Arra
       const inputs = tx.transaction?.data?.transaction?.inputs ?? [];
 
       // Check if any MoveCall in this tx is our submit_riddle_answer
-      const isRiddleSubmission = txns.some((t: {
-        MoveCall?: { package?: string; module?: string; function?: string };
-      }) =>
-        t.MoveCall?.package === V4_PKG &&
-        t.MoveCall?.module  === 'tasks' &&
-        t.MoveCall?.function === 'submit_riddle_answer'
-      );
+      // Check all possible structures — direct MoveCall, PTB nested, sponsored
+      const rawTx = tx.transaction?.data?.transaction as {
+        kind?: string;
+        transactions?: Array<{
+          MoveCall?: { package?: string; module?: string; function?: string };
+        }>;
+        moveCall?: { package?: string; module?: string; function?: string };
+      } | undefined;
+
+      const txnsList = rawTx?.transactions ?? [];
+      const isRiddleSubmission =
+        // PTB structure — MoveCall inside transactions array
+        txnsList.some((t) =>
+          t.MoveCall?.package === V4_PKG &&
+          t.MoveCall?.module  === 'tasks' &&
+          t.MoveCall?.function === 'submit_riddle_answer'
+        ) ||
+        // Direct MoveCall structure
+        (rawTx?.moveCall?.package === V4_PKG &&
+         rawTx?.moveCall?.module  === 'tasks' &&
+         rawTx?.moveCall?.function === 'submit_riddle_answer');
 
       if (!isRiddleSubmission) continue;
 
-      // Find riddle number from inputs[1]
-      const riddleInput  = inputs[1];
+      // Find riddle number — inputs[1] in PTB, inputs[0] in direct call
+      const riddleInput  = inputs[1] ?? inputs[0];
       const riddleNumber = riddleInput?.value !== undefined
         ? parseInt(String(riddleInput.value), 10)
         : NaN;
