@@ -90,7 +90,7 @@ async function fetchWalletRiddleSubmissions(walletAddress: string): Promise<Arra
   };
 
   while (true) {
-    const page = await rpcCall<TxResult>('suix_queryTransactionBlocks', [
+    const page: TxResult = await rpcCall<TxResult>('suix_queryTransactionBlocks', [
       {
         filter:  { FromAddress: walletAddress },
         options: { showInput: true },
