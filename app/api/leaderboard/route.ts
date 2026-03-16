@@ -197,13 +197,12 @@ export async function GET(req: NextRequest) {
       const drzRiddle     = drz.riddle;
       const drzNft        = drz.nft_reveal;
       const lockedTotal   = locked.ika + locked.isui;
-      // Unlocked = all realized drizzlets: staking unlocks + NFT reveals + riddle
       const unlockedTotal = drz.unlock + drz.isui_lock + drzNft + drzRiddle;
       const drzFromIka    = locked.ika  + drz.unlock;
       const drzFromIsui   = locked.isui + drz.isui_lock;
-      // Total = locked (silently earning) + unlocked (all realized sources)
-      const total         = lockedTotal + unlockedTotal;
-
+      // Use wallets table total as authoritative — already includes locked+unlocked
+      // from last index run. More accurate than recalculating from scratch here.
+      const total         = Number(w.total_drizzlets);
       const baseRank = from + i + 1;
       const rank     = rankOverrides[addr] ?? baseRank;
 
