@@ -15,7 +15,7 @@ import { createClient } from '@supabase/supabase-js';
 
 const V4_PKG        = '0x765307507478ca630ddc0c44ab3bb9e83c3aa98aea2777a4f0aea0ade4a853f8';
 const RPC_URL       = process.env.SUI_RPC_URL || 'https://fullnode.mainnet.sui.io:443';
-const WALLETS_PER_RUN = 5;   // process 10 wallets per Vercel invocation
+const WALLETS_PER_RUN = 2;   // process 10 wallets per Vercel invocation
 const TIME_BUDGET_MS  = 45_000;
 
 function getDB() {
