@@ -66,7 +66,7 @@ async function getChainSubmissionCount(objectId: string): Promise<number> {
   let cursor: string | null = null;
 
   while (true) {
-    const result = await rpcCall<DynamicFieldsPage>('suix_getDynamicFields', [
+    const result: DynamicFieldsPage = await rpcCall<DynamicFieldsPage>('suix_getDynamicFields', [
       objectId,
       cursor,
       50,
