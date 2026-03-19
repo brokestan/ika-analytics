@@ -466,13 +466,6 @@ export async function fetchRiddlePool(): Promise<RiddlePoolFields | null> {
 
 // ─── Riddle Submissions ───────────────────────────────────────────────────────
 
-export interface RiddleSubmissionFlat {
-  txDigest:       string;
-  timestampMs:    string;
-  wallet_address: string;
-  riddle_number:  number;
-}
-
 export async function fetchRiddleSubmissions(
   cursor: EventCursor | null = null
 ): Promise<EventPage<RiddleSubmissionFlat>> {
@@ -482,9 +475,7 @@ export async function fetchRiddleSubmissions(
         digest:      string;
         timestampMs: string;
         effects?: {
-          status?: {
-            status: string;
-          };
+          status?: { status: string };
         };
         transaction: {
           data: {
@@ -502,11 +493,6 @@ export async function fetchRiddleSubmissions(
                   arguments?: Array<{ Input?: number } | unknown>;
                 };
               }>;
-              moveCall?: {
-                package?:  string;
-                module?:   string;
-                function?: string;
-              };
             };
             sender: string;
           };
@@ -530,16 +516,19 @@ export async function fetchRiddleSubmissions(
       false,
     ]);
 
-    const data: RiddleSubmissionFlat[] = [];
+    const data: RiddleSubmissionFlat[]  = [];
     const skipped: Array<{
       txDigest:  string;
       rawInputs: unknown;
       rawTxns:   unknown;
     }> = [];
+
     for (const tx of result.data) {
+      // Skip failed transactions
       if (tx.effects?.status?.status !== 'success') continue;
+
       const txData     = tx.transaction?.data?.transaction;
-      const inputs     = txData?.inputs     ?? [];
+      const inputs     = txData?.inputs       ?? [];
       const txns       = txData?.transactions ?? [];
       let riddleNumber = NaN;
 
@@ -562,40 +551,15 @@ export async function fetchRiddleSubmissions(
         }
       }
 
-      // ── Path 2: Direct MoveCall — inputs[1] is the riddle number ────────
+      // ── Path 2: Direct call — inputs[1] is the riddle number ────────────
       if (isNaN(riddleNumber)) {
-        const isDirect =
-          txData?.moveCall?.package  === V4_PKG &&
-          txData?.moveCall?.module   === 'tasks' &&
-          txData?.moveCall?.function === 'submit_riddle_answer';
-
-        if (isDirect) {
-          const val = inputs[1]?.value;
-          if (val !== undefined) {
-            const parsed = parseInt(String(val), 10);
-            if (parsed >= 1 && parsed <= 3) riddleNumber = parsed;
-          }
+        const val = inputs[1]?.value;
+        if (val !== undefined) {
+          const parsed = parseInt(String(val), 10);
+          if (parsed >= 1 && parsed <= 3) riddleNumber = parsed;
         }
       }
 
-      // ── Path 3: Last resort — scan all pure u64 inputs for 1, 2, or 3 ──
-      if (isNaN(riddleNumber)) {
-        for (const inp of inputs) {
-          if (
-            inp?.type      === 'pure' &&
-            inp?.valueType === 'u64'  &&
-            inp?.value     !== undefined
-          ) {
-            const parsed = parseInt(String(inp.value), 10);
-            if (parsed >= 1 && parsed <= 3) {
-              riddleNumber = parsed;
-              break;
-            }
-          }
-        }
-      }
-
-      // ── All paths failed — log to skipped for DB inspection ─────────────
       if (isNaN(riddleNumber)) {
         skipped.push({
           txDigest:  tx.digest,
@@ -633,9 +597,7 @@ export async function fetchV3RiddleSubmissions(
         digest:      string;
         timestampMs: string;
         effects?: {
-          status?: {
-            status: string;
-          };
+          status?: { status: string };
         };
         transaction: {
           data: {
@@ -676,15 +638,17 @@ export async function fetchV3RiddleSubmissions(
       false,
     ]);
 
-    const data: RiddleSubmissionFlat[] = [];
+    const data: RiddleSubmissionFlat[]  = [];
     const skipped: Array<{
       txDigest:  string;
       rawInputs: unknown;
       rawTxns:   unknown;
     }> = [];
+
     for (const tx of result.data) {
+      // Skip failed transactions
       if (tx.effects?.status?.status !== 'success') continue;
-      // Only process successful transactions
+
       const txData     = tx.transaction?.data?.transaction;
       const inputs     = txData?.inputs       ?? [];
       const txns       = txData?.transactions ?? [];
@@ -709,20 +673,12 @@ export async function fetchV3RiddleSubmissions(
         }
       }
 
-      // ── Path 2: scan all pure u64 inputs for 1, 2, or 3 ────────────────
+      // ── Path 2: Direct call — inputs[1] is the riddle number ────────────
       if (isNaN(riddleNumber)) {
-        for (const inp of inputs) {
-          if (
-            inp?.type      === 'pure' &&
-            inp?.valueType === 'u64'  &&
-            inp?.value     !== undefined
-          ) {
-            const parsed = parseInt(String(inp.value), 10);
-            if (parsed >= 1 && parsed <= 3) {
-              riddleNumber = parsed;
-              break;
-            }
-          }
+        const val = inputs[1]?.value;
+        if (val !== undefined) {
+          const parsed = parseInt(String(val), 10);
+          if (parsed >= 1 && parsed <= 3) riddleNumber = parsed;
         }
       }
 
