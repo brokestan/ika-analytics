@@ -481,17 +481,13 @@ export async function fetchRiddleSubmissions(
       data: Array<{
         digest:      string;
         timestampMs: string;
-        transaction: {
-          data: {
-            ...
-          };
-        };
-        // ADD THIS:
         effects?: {
           status?: {
             status: string;
           };
         };
+        transaction: {
+          data: {
             transaction: {
               inputs?: Array<{
                 type:       string;
@@ -540,10 +536,8 @@ export async function fetchRiddleSubmissions(
       rawInputs: unknown;
       rawTxns:   unknown;
     }> = [];
-
-    // Skip failed transactions
-      if (tx.effects?.status?.status !== 'success') continue;
     for (const tx of result.data) {
+      if (tx.effects?.status?.status !== 'success') continue;
       const txData     = tx.transaction?.data?.transaction;
       const inputs     = txData?.inputs     ?? [];
       const txns       = txData?.transactions ?? [];
@@ -638,17 +632,13 @@ export async function fetchV3RiddleSubmissions(
       data: Array<{
         digest:      string;
         timestampMs: string;
-        transaction: {
-          data: {
-            ...
-          };
-        };
-        // ADD THIS:
         effects?: {
           status?: {
             status: string;
           };
         };
+        transaction: {
+          data: {
             transaction: {
               inputs?: Array<{
                 type:       string;
@@ -686,16 +676,14 @@ export async function fetchV3RiddleSubmissions(
       false,
     ]);
 
-    // Skip failed transactions
-      if (tx.effects?.status?.status !== 'success') continue;
-    const data: RiddleSubmissionFlat[]  = [];
+    const data: RiddleSubmissionFlat[] = [];
     const skipped: Array<{
       txDigest:  string;
       rawInputs: unknown;
       rawTxns:   unknown;
     }> = [];
-
     for (const tx of result.data) {
+      if (tx.effects?.status?.status !== 'success') continue;
       // Only process successful transactions
       const txData     = tx.transaction?.data?.transaction;
       const inputs     = txData?.inputs       ?? [];
