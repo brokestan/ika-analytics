@@ -462,7 +462,14 @@ export async function fetchRiddlePool(): Promise<RiddlePoolFields | null> {
 
 // ─── Riddle Submissions ───────────────────────────────────────────────────────
 
-    export async function fetchRiddleSubmissions(
+export interface RiddleSubmissionFlat {
+  txDigest:       string;
+  timestampMs:    string;
+  wallet_address: string;
+  riddle_number:  number;
+}
+
+export async function fetchRiddleSubmissions(
   cursor: EventCursor | null = null
 ): Promise<EventPage<RiddleSubmissionFlat>> {
   try {
