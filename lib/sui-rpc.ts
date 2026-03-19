@@ -22,6 +22,10 @@ const V4_PKG =
   process.env.IKA_V4_PACKAGE_ID ||
   '0x765307507478ca630ddc0c44ab3bb9e83c3aa98aea2777a4f0aea0ade4a853f8';
 
+const V3_PKG =
+  process.env.IKA_V3_PACKAGE_ID ||
+  '0x8349769aebae145032813465696e19958881857b762aba5411ff9cd07c8214e5';
+
 export const RIDDLE_DRIZZLETS_PER_SUBMISSION = 31;
 
 // Event type strings — exact names confirmed from package tx list
@@ -614,6 +618,132 @@ export async function fetchRiddleSubmissions(
     return { data: [], nextCursor: null, hasNextPage: false, skipped: [] };
   }
 }
+
+export async function fetchV3RiddleSubmissions(
+  cursor: EventCursor | null = null
+): Promise<EventPage<RiddleSubmissionFlat>> {
+  try {
+    const result = await rpcCall<{
+      data: Array<{
+        digest:      string;
+        timestampMs: string;
+        transaction: {
+          data: {
+            transaction: {
+              inputs?: Array<{
+                type:       string;
+                valueType?: string;
+                value?:     string;
+              }>;
+              transactions?: Array<{
+                MoveCall?: {
+                  package?:   string;
+                  module?:    string;
+                  function?:  string;
+                  arguments?: Array<{ Input?: number } | unknown>;
+                };
+              }>;
+            };
+            sender: string;
+          };
+        };
+      }>;
+      nextCursor:  string | null;
+      hasNextPage: boolean;
+    }>('suix_queryTransactionBlocks', [
+      {
+        filter: {
+          MoveFunction: {
+            package:  V3_PKG,
+            module:   'tasks',
+            function: 'submit_riddle_answer',
+          },
+        },
+        options: { showInput: true },
+      },
+      cursor ? cursor.txDigest : null,
+      100,
+      false,
+    ]);
+
+    const data: RiddleSubmissionFlat[]  = [];
+    const skipped: Array<{
+      txDigest:  string;
+      rawInputs: unknown;
+      rawTxns:   unknown;
+    }> = [];
+
+    for (const tx of result.data) {
+      // Only process successful transactions
+      const txData     = tx.transaction?.data?.transaction;
+      const inputs     = txData?.inputs       ?? [];
+      const txns       = txData?.transactions ?? [];
+      let riddleNumber = NaN;
+
+      // ── Path 1: PTB — find exact MoveCall, read argument index ──────────
+      const ptbMoveCall = txns.find(t =>
+        t.MoveCall?.package  === V3_PKG &&
+        t.MoveCall?.module   === 'tasks' &&
+        t.MoveCall?.function === 'submit_riddle_answer'
+      )?.MoveCall;
+
+      if (ptbMoveCall) {
+        const riddleArg  = ptbMoveCall.arguments?.[1] as { Input?: number } | undefined;
+        const inputIndex = riddleArg?.Input;
+        if (inputIndex !== undefined) {
+          const val = inputs[inputIndex]?.value;
+          if (val !== undefined) {
+            const parsed = parseInt(String(val), 10);
+            if (parsed >= 1 && parsed <= 3) riddleNumber = parsed;
+          }
+        }
+      }
+
+      // ── Path 2: scan all pure u64 inputs for 1, 2, or 3 ────────────────
+      if (isNaN(riddleNumber)) {
+        for (const inp of inputs) {
+          if (
+            inp?.type      === 'pure' &&
+            inp?.valueType === 'u64'  &&
+            inp?.value     !== undefined
+          ) {
+            const parsed = parseInt(String(inp.value), 10);
+            if (parsed >= 1 && parsed <= 3) {
+              riddleNumber = parsed;
+              break;
+            }
+          }
+        }
+      }
+
+      if (isNaN(riddleNumber)) {
+        skipped.push({
+          txDigest:  tx.digest,
+          rawInputs: inputs,
+          rawTxns:   txns,
+        });
+        continue;
+      }
+
+      data.push({
+        txDigest:       tx.digest,
+        timestampMs:    tx.timestampMs,
+        wallet_address: tx.transaction.data.sender,
+        riddle_number:  riddleNumber,
+      });
+    }
+
+    const nextCursor: EventCursor | null = result.nextCursor
+      ? { txDigest: result.nextCursor, eventSeq: '0' }
+      : null;
+
+    return { data, nextCursor, hasNextPage: result.hasNextPage, skipped };
+  } catch (err) {
+    console.error('[fetchV3RiddleSubmissions]', err);
+    return { data: [], nextCursor: null, hasNextPage: false, skipped: [] };
+  }
+}
+
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
 
