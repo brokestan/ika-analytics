@@ -1,9 +1,10 @@
 /**
  * app/api/backfill-riddles/route.ts
  *
- * One-time backfill for gap wallets — fetches missing riddle submissions
- * using FromAddress filter per wallet, filters for v4 submit_riddle_answer calls,
- * inserts only the ones not already in riddle_submissions.
+ * Gap detection for riddle submissions.
+ * For each wallet, fetches object changes from their tx digests in riddle_submissions,
+ * finds the created dynamic field object (submission counter), reads its name (= submission number),
+ * compares max(name) on-chain vs our DB count, saves gaps to riddle_submission_gaps.
  *
  * Call with: GET /api/backfill-riddles?secret=YOUR_CRON_SECRET
  * Processes WALLETS_PER_RUN wallets per call — run multiple times until done.
@@ -13,9 +14,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 
-const V4_PKG        = '0x765307507478ca630ddc0c44ab3bb9e83c3aa98aea2777a4f0aea0ade4a853f8';
-const RPC_URL       = process.env.SUI_RPC_URL || 'https://fullnode.mainnet.sui.io:443';
-const WALLETS_PER_RUN = 2;   // process 10 wallets per Vercel invocation
+const RPC_URL        = process.env.SUI_RPC_URL || 'https://fullnode.mainnet.sui.io:443';
+const WALLETS_PER_RUN = 50;
 const TIME_BUDGET_MS  = 45_000;
 
 function getDB() {
@@ -51,107 +51,83 @@ async function rpcCall<T>(method: string, params: unknown[]): Promise<T> {
   return json.result as T;
 }
 
-// Fetch ALL riddle submissions for a specific wallet using FromAddress filter
-async function fetchWalletRiddleSubmissions(walletAddress: string): Promise<Array<{
-  txDigest:     string;
-  riddleNumber: number;
-  submittedAt:  string | null;
-}>> {
-  const results: Array<{ txDigest: string; riddleNumber: number; submittedAt: string | null }> = [];
-  let cursor: string | null = null;
+function chunk<T>(arr: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
+}
 
-  type TxResult = {
-    data: Array<{
-      digest: string;
-      timestampMs?: string;
-      transaction?: {
-        data?: {
-          sender?: string;
-          transaction?: {
-            kind?: string;
-            transactions?: Array<{
-              MoveCall?: {
-                package?: string;
-                module?:  string;
-                function?: string;
-              };
-            }>;
-            inputs?: Array<{
-              type?:      string;
-              valueType?: string;
-              value?:     string;
-            }>;
-          };
-        };
-      };
+/**
+ * Given tx digests, fetch object changes and find the created
+ * dynamic field object (type contains dynamic_field::Field<u64)
+ * Returns map of txDigest -> { objectId, name (submission number) }
+ */
+async function fetchSubmissionCounters(
+  txDigests: string[]
+): Promise<Record<string, number>> {
+  if (txDigests.length === 0) return {};
+
+  // Step 1: get object changes to find created dynamic field object IDs
+  const txResults = await rpcCall<Array<{
+    objectChanges?: Array<{
+      type:        string;
+      objectType?: string;
+      objectId?:   string;
     }>;
-    nextCursor: string | null;
-    hasNextPage: boolean;
-  };
+  } | null>>('sui_multiGetTransactionBlocks', [
+    txDigests,
+    { showObjectChanges: true, showInput: false, showEffects: false, showEvents: false },
+  ]);
 
-  while (true) {
-    const page: TxResult = await rpcCall<TxResult>('suix_queryTransactionBlocks', [
-      {
-        filter:  { FromAddress: walletAddress },
-        options: { showInput: true },
-      },
-      cursor,
-      50,
-      false, // ascending
-    ]);
-
-    for (const tx of page.data) {
-      const txns = tx.transaction?.data?.transaction?.transactions ?? [];
-      const inputs = tx.transaction?.data?.transaction?.inputs ?? [];
-
-      // Check if any MoveCall in this tx is our submit_riddle_answer
-      // Check all possible structures — direct MoveCall, PTB nested, sponsored
-      const rawTx = tx.transaction?.data?.transaction as {
-        kind?: string;
-        transactions?: Array<{
-          MoveCall?: { package?: string; module?: string; function?: string };
-        }>;
-        moveCall?: { package?: string; module?: string; function?: string };
-      } | undefined;
-
-      const txnsList = rawTx?.transactions ?? [];
-      const isRiddleSubmission =
-        // PTB structure — MoveCall inside transactions array
-        txnsList.some((t) =>
-          t.MoveCall?.package === V4_PKG &&
-          t.MoveCall?.module  === 'tasks' &&
-          t.MoveCall?.function === 'submit_riddle_answer'
-        ) ||
-        // Direct MoveCall structure
-        (rawTx?.moveCall?.package === V4_PKG &&
-         rawTx?.moveCall?.module  === 'tasks' &&
-         rawTx?.moveCall?.function === 'submit_riddle_answer');
-
-      if (!isRiddleSubmission) continue;
-
-      // Find riddle number — inputs[1] in PTB, inputs[0] in direct call
-      const riddleInput  = inputs[1] ?? inputs[0];
-      const riddleNumber = riddleInput?.value !== undefined
-        ? parseInt(String(riddleInput.value), 10)
-        : NaN;
-
-      if (isNaN(riddleNumber) || riddleNumber < 1 || riddleNumber > 3) continue;
-
-      results.push({
-        txDigest:     tx.digest,
-        riddleNumber,
-        submittedAt:  tx.timestampMs
-          ? new Date(parseInt(tx.timestampMs)).toISOString()
-          : null,
-      });
+  // Map txDigest -> created dynamic field objectId
+  const txToObjectId: Record<string, string> = {};
+  for (let i = 0; i < txDigests.length; i++) {
+    const changes = txResults[i]?.objectChanges ?? [];
+    const created = changes.find(c =>
+      c.type === 'created' &&
+      c.objectType?.includes('dynamic_field::Field')
+    );
+    if (created?.objectId) {
+      txToObjectId[txDigests[i]] = created.objectId;
     }
-
-    if (!page.hasNextPage || !page.nextCursor) break;
-    cursor = page.nextCursor;
-    await sleep(300); // be kind to the RPC
   }
 
-  return results;
+  const objectIds = Object.values(txToObjectId);
+  if (objectIds.length === 0) return {};
+
+  // Step 2: fetch those objects to read name field (= submission number)
+  const objResults = await rpcCall<Array<{
+    data?: {
+      objectId: string;
+      content?: {
+        fields?: {
+          name?: string | number;
+        };
+      };
+    };
+  } | null>>('sui_multiGetObjects', [
+    objectIds,
+    { showContent: true },
+  ]);
+
+  // Map objectId -> submission number
+  const objectIdToNumber: Record<string, number> = {};
+  for (const obj of objResults) {
+    const objectId = obj?.data?.objectId;
+    const name     = obj?.data?.content?.fields?.name;
+    if (objectId && name !== undefined) {
+      objectIdToNumber[objectId] = parseInt(String(name), 10);
+    }
+  }
+
+  // Map txDigest -> submission number
+  const txToNumber: Record<string, number> = {};
+  for (const [txDigest, objectId] of Object.entries(txToObjectId)) {
+    const num = objectIdToNumber[objectId];
+    if (num !== undefined) txToNumber[txDigest] = num;
+  }
+
+  return txToNumber;
 }
 
 export async function GET(req: NextRequest) {
@@ -162,18 +138,7 @@ export async function GET(req: NextRequest) {
   const startMs = Date.now();
   const db      = getDB();
 
-  // ── 1. Get gap wallets ─────────────────────────────────────────────────────
-  const { data: gapRows, error: gapErr } = await db.rpc('get_riddle_gap_wallets');
-  if (gapErr) {
-    return NextResponse.json({ error: gapErr.message }, { status: 500 });
-  }
-  const gapWallets = (gapRows as Array<{ wallet_address: string; missing_submissions: number }>) || [];
-
-  if (gapWallets.length === 0) {
-    return NextResponse.json({ done: true, message: 'No gap wallets found — all caught up!' });
-  }
-
-  // ── 2. Get current offset ─────────────────────────────────────────────────
+  // ── 1. Get current offset ──────────────────────────────────────────────────
   const { data: cp } = await db
     .from('indexer_checkpoints')
     .select('last_tx_digest')
@@ -181,128 +146,131 @@ export async function GET(req: NextRequest) {
     .single();
 
   const offset = cp?.last_tx_digest ? parseInt(cp.last_tx_digest, 10) : 0;
-  const batch  = gapWallets.slice(offset, offset + WALLETS_PER_RUN);
 
-  if (batch.length === 0) {
-    // Reset offset — all done
-    await db.from('indexer_checkpoints').delete().eq('event_type', 'riddle_backfill_offset');
-    return NextResponse.json({ done: true, message: 'All gap wallets processed!' });
+  // ── 2. Get all distinct wallets from riddle_submissions ────────────────────
+  const { data: walletRows, error: walletErr } = await db
+    .from('riddle_submissions')
+    .select('wallet_address')
+    .order('wallet_address');
+
+  if (walletErr) {
+    return NextResponse.json({ error: walletErr.message }, { status: 500 });
   }
 
-  // ── 3. Process each wallet ────────────────────────────────────────────────
-  const log: Record<string, unknown>[] = [];
-  let totalInserted = 0;
+  // Deduplicate wallets
+  const allWallets = [...new Set(
+    (walletRows || []).map((r: { wallet_address: string }) => r.wallet_address)
+  )];
 
-  for (const { wallet_address } of batch) {
+  if (allWallets.length === 0) {
+    return NextResponse.json({ done: true, message: 'No wallets found' });
+  }
+
+  const batch = allWallets.slice(offset, offset + WALLETS_PER_RUN);
+
+  if (batch.length === 0) {
+    await db.from('indexer_checkpoints')
+      .delete().eq('event_type', 'riddle_backfill_offset');
+    return NextResponse.json({ done: true, message: 'All wallets checked!' });
+  }
+
+  // ── 3. Process each wallet ─────────────────────────────────────────────────
+  const log: Record<string, unknown>[] = [];
+  let totalGaps = 0;
+
+  for (const wallet of batch) {
     if (Date.now() - startMs > TIME_BUDGET_MS) {
-      log.push({ wallet: wallet_address, status: 'time_budget_reached' });
+      log.push({ wallet, status: 'time_budget_reached' });
       break;
     }
 
     try {
-      // Fetch all riddle submissions for this wallet on-chain
-      const onChain = await fetchWalletRiddleSubmissions(wallet_address);
-
-      if (onChain.length === 0) {
-        log.push({ wallet: wallet_address, status: 'no_riddle_txs_found' });
-        continue;
-      }
-
-      // Get already-indexed tx digests for this wallet
-      const { data: existing } = await db
+      // Get all tx digests for this wallet from our DB
+      const { data: txRows } = await db
         .from('riddle_submissions')
         .select('tx_digest')
-        .eq('wallet_address', wallet_address);
+        .eq('wallet_address', wallet);
 
-      const existingSet = new Set((existing || []).map((r: { tx_digest: string }) => r.tx_digest));
+      const txDigests = (txRows || []).map((r: { tx_digest: string }) => r.tx_digest);
+      const dbCount   = txDigests.length;
 
-      // Filter to only missing ones
-      const missing = onChain.filter(s => !existingSet.has(s.txDigest));
-
-      if (missing.length === 0) {
-        log.push({ wallet: wallet_address, status: 'already_complete', on_chain: onChain.length });
+      if (dbCount === 0) {
+        log.push({ wallet, status: 'no_txs' });
         continue;
       }
 
-      // Insert missing riddle_submissions
-      const submissionRows = missing.map(s => ({
-        wallet_address: wallet_address,
-        riddle_number:  s.riddleNumber,
-        tx_digest:      s.txDigest,
-        submitted_at:   s.submittedAt,
-        solved:         false,
-      }));
-
-      const { error: subErr } = await db
-        .from('riddle_submissions')
-        .upsert(submissionRows, { onConflict: 'tx_digest' });
-
-      if (subErr) {
-        log.push({ wallet: wallet_address, status: 'error', error: subErr.message });
-        continue;
+      // Fetch submission counter objects from all txs in batches of 50
+      const txToNumber: Record<string, number> = {};
+      for (const txBatch of chunk(txDigests, 50)) {
+        const result = await fetchSubmissionCounters(txBatch);
+        Object.assign(txToNumber, result);
+        await sleep(200);
       }
 
-      // Insert corresponding drizzlet rows
-      const drizzletRows = missing.map(s => ({
-        wallet_address: wallet_address,
-        source:         'riddle',
-        amount:         31,
-        reference_id:   s.txDigest,
-        earned_at:      s.submittedAt,
-      }));
+      // Find max submission number = true chain count
+      const numbers   = Object.values(txToNumber).filter(n => !isNaN(n));
+      const chainCount = numbers.length > 0 ? Math.max(...numbers) : dbCount;
+      const gapCount   = chainCount - dbCount;
 
-      const { error: drzErr } = await db
-        .from('drizzlets')
-        .upsert(drizzletRows, { onConflict: 'wallet_address,reference_id' });
+      if (gapCount > 0) {
+        // Save gap to DB
+        await db.from('riddle_submission_gaps').upsert({
+          wallet_address: wallet,
+          db_count:       dbCount,
+          chain_count:    chainCount,
+          gap_count:      gapCount,
+          checked_at:     new Date().toISOString(),
+        }, { onConflict: 'wallet_address' });
 
-      if (drzErr) {
-        log.push({ wallet: wallet_address, status: 'drizzlet_error', error: drzErr.message });
-        continue;
+        totalGaps += gapCount;
+        log.push({
+          wallet,
+          status:      'gap_found',
+          db_count:    dbCount,
+          chain_count: chainCount,
+          gap_count:   gapCount,
+        });
+      } else {
+        log.push({
+          wallet,
+          status:      'ok',
+          db_count:    dbCount,
+          chain_count: chainCount,
+        });
       }
 
-      totalInserted += missing.length;
-      log.push({
-        wallet:   wallet_address,
-        status:   'fixed',
-        inserted: missing.length,
-        on_chain: onChain.length,
-        was_indexed: onChain.length - missing.length,
-      });
-
-      await sleep(500); // pause between wallets
+      await sleep(200);
 
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      log.push({ wallet: wallet_address, status: 'error', error: msg });
+      log.push({ wallet, status: 'error', error: msg });
     }
   }
 
-  // ── 4. Save new offset ────────────────────────────────────────────────────
+  // ── 4. Save new offset ─────────────────────────────────────────────────────
   const newOffset = offset + batch.length;
-  const allDone   = newOffset >= gapWallets.length;
+  const allDone   = newOffset >= allWallets.length;
 
   if (allDone) {
-    await db.from('indexer_checkpoints').delete().eq('event_type', 'riddle_backfill_offset');
+    await db.from('indexer_checkpoints')
+      .delete().eq('event_type', 'riddle_backfill_offset');
   } else {
-    await db.from('indexer_checkpoints').upsert(
-      {
-        event_type:     'riddle_backfill_offset',
-        last_tx_digest: String(newOffset),
-        last_event_seq: '0',
-        updated_at:     new Date().toISOString(),
-      },
-      { onConflict: 'event_type' }
-    );
+    await db.from('indexer_checkpoints').upsert({
+      event_type:     'riddle_backfill_offset',
+      last_tx_digest: String(newOffset),
+      last_event_seq: '0',
+      updated_at:     new Date().toISOString(),
+    }, { onConflict: 'event_type' });
   }
 
   return NextResponse.json({
-    done:            allDone,
-    offset_was:      offset,
-    offset_now:      allDone ? 0 : newOffset,
-    wallets_total:   gapWallets.length,
-    wallets_remaining: allDone ? 0 : gapWallets.length - newOffset,
-    submissions_inserted: totalInserted,
-    elapsed_ms:      Date.now() - startMs,
+    done:              allDone,
+    offset_was:        offset,
+    offset_now:        allDone ? 0 : newOffset,
+    wallets_total:     allWallets.length,
+    wallets_remaining: allDone ? 0 : allWallets.length - newOffset,
+    total_gaps_found:  totalGaps,
+    elapsed_ms:        Date.now() - startMs,
     log,
   });
 }
