@@ -653,16 +653,6 @@ export async function fetchRiddleSubmissions(
     return { data: [], nextCursor: null, hasNextPage: false, skipped: [] };
   }
 }
-    const nextCursor: EventCursor | null = result.nextCursor
-      ? { txDigest: result.nextCursor, eventSeq: '0' }
-      : null;
-
-    return { data, nextCursor, hasNextPage: result.hasNextPage };
-  } catch (err) {
-    console.error('[fetchRiddleSubmissions]', err);
-    return { data: [], nextCursor: null, hasNextPage: false };
-  }
-}
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
 
