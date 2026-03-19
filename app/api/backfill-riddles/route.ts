@@ -55,16 +55,18 @@ async function rpcCall<T>(method: string, params: unknown[]): Promise<T> {
  * Each dynamic field = one riddle submission on chain.
  * Paginates through all fields if there are more than 50.
  */
+interface DynamicFieldsPage {
+  data:        unknown[];
+  nextCursor:  string | null;
+  hasNextPage: boolean;
+}
+
 async function getChainSubmissionCount(objectId: string): Promise<number> {
-  let total  = 0;
+  let total:  number      = 0;
   let cursor: string | null = null;
 
   while (true) {
-    const result = await rpcCall<{
-      data:        unknown[];
-      nextCursor:  string | null;
-      hasNextPage: boolean;
-    }>('suix_getDynamicFields', [
+    const result = await rpcCall<DynamicFieldsPage>('suix_getDynamicFields', [
       objectId,
       cursor,
       50,
