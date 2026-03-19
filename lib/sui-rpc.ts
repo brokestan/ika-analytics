@@ -483,6 +483,15 @@ export async function fetchRiddleSubmissions(
         timestampMs: string;
         transaction: {
           data: {
+            ...
+          };
+        };
+        // ADD THIS:
+        effects?: {
+          status?: {
+            status: string;
+          };
+        };
             transaction: {
               inputs?: Array<{
                 type:       string;
@@ -518,7 +527,7 @@ export async function fetchRiddleSubmissions(
             function: 'submit_riddle_answer',
           },
         },
-        options: { showInput: true },
+        options: { showInput: true, showEffects: true },
       },
       cursor ? cursor.txDigest : null,
       100,
@@ -532,6 +541,8 @@ export async function fetchRiddleSubmissions(
       rawTxns:   unknown;
     }> = [];
 
+    // Skip failed transactions
+      if (tx.effects?.status?.status !== 'success') continue;
     for (const tx of result.data) {
       const txData     = tx.transaction?.data?.transaction;
       const inputs     = txData?.inputs     ?? [];
@@ -629,6 +640,15 @@ export async function fetchV3RiddleSubmissions(
         timestampMs: string;
         transaction: {
           data: {
+            ...
+          };
+        };
+        // ADD THIS:
+        effects?: {
+          status?: {
+            status: string;
+          };
+        };
             transaction: {
               inputs?: Array<{
                 type:       string;
@@ -659,13 +679,15 @@ export async function fetchV3RiddleSubmissions(
             function: 'submit_riddle_answer',
           },
         },
-        options: { showInput: true },
+        options: { showInput: true, showEffects: true },
       },
       cursor ? cursor.txDigest : null,
       100,
       false,
     ]);
 
+    // Skip failed transactions
+      if (tx.effects?.status?.status !== 'success') continue;
     const data: RiddleSubmissionFlat[]  = [];
     const skipped: Array<{
       txDigest:  string;
