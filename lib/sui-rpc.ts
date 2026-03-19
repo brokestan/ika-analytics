@@ -56,6 +56,7 @@ export interface EventPage<T> {
   data: T[];
   nextCursor: EventCursor | null;
   hasNextPage: boolean;
+  skipped?: Array<{ txDigest: string; rawInputs: unknown; rawTxns: unknown }>;
 }
 
 export interface LockEventFlat {
@@ -507,67 +508,151 @@ export async function fetchRiddleSubmissions(
       false,
     ]);
 
+    export async function fetchRiddleSubmissions(
+  cursor: EventCursor | null = null
+): Promise<EventPage<RiddleSubmissionFlat>> {
+  try {
+    const result = await rpcCall<{
+      data: Array<{
+        digest:      string;
+        timestampMs: string;
+        transaction: {
+          data: {
+            transaction: {
+              inputs?: Array<{
+                type:       string;
+                valueType?: string;
+                value?:     string;
+              }>;
+              transactions?: Array<{
+                MoveCall?: {
+                  package?:   string;
+                  module?:    string;
+                  function?:  string;
+                  arguments?: Array<{ Input?: number } | unknown>;
+                };
+              }>;
+              moveCall?: {
+                package?:  string;
+                module?:   string;
+                function?: string;
+              };
+            };
+            sender: string;
+          };
+        };
+      }>;
+      nextCursor:  string | null;
+      hasNextPage: boolean;
+    }>('suix_queryTransactionBlocks', [
+      {
+        filter: {
+          MoveFunction: {
+            package:  V4_PKG,
+            module:   'tasks',
+            function: 'submit_riddle_answer',
+          },
+        },
+        options: { showInput: true },
+      },
+      cursor ? cursor.txDigest : null,
+      100,
+      false,
+    ]);
+
     const data: RiddleSubmissionFlat[] = [];
-for (const tx of result.data) {
-  const txData = tx.transaction?.data?.transaction as {
-    inputs?: Array<{
-      type: string;
-      valueType?: string;
-      value?: string;
-    }>;
-    transactions?: Array<{
-      MoveCall?: {
-        package?: string;
-        module?:  string;
-        function?: string;
-        arguments?: Array<{ Input?: number } | unknown>;
-      };
-    }>;
-  } | undefined;
+    const skipped: Array<{
+      txDigest:  string;
+      rawInputs: unknown;
+      rawTxns:   unknown;
+    }> = [];
 
-  const inputs       = txData?.inputs ?? [];
-  const transactions = txData?.transactions ?? [];
+    for (const tx of result.data) {
+      const txData     = tx.transaction?.data?.transaction;
+      const inputs     = txData?.inputs     ?? [];
+      const txns       = txData?.transactions ?? [];
+      let riddleNumber = NaN;
 
-  // Find the exact MoveCall for submit_riddle_answer
-  const moveCall = transactions.find(t =>
-    t.MoveCall?.package  === V4_PKG &&
-    t.MoveCall?.module   === 'tasks' &&
-    t.MoveCall?.function === 'submit_riddle_answer'
-  )?.MoveCall;
+      // ── Path 1: PTB — find exact MoveCall, read argument index ──────────
+      const ptbMoveCall = txns.find(t =>
+        t.MoveCall?.package  === V4_PKG &&
+        t.MoveCall?.module   === 'tasks' &&
+        t.MoveCall?.function === 'submit_riddle_answer'
+      )?.MoveCall;
 
-  if (!moveCall) {
-    console.warn(`[fetchRiddleSubmissions] No MoveCall found in tx ${tx.digest}`);
-    continue;
+      if (ptbMoveCall) {
+        const riddleArg  = ptbMoveCall.arguments?.[1] as { Input?: number } | undefined;
+        const inputIndex = riddleArg?.Input;
+        if (inputIndex !== undefined) {
+          const val = inputs[inputIndex]?.value;
+          if (val !== undefined) {
+            const parsed = parseInt(String(val), 10);
+            if (parsed >= 1 && parsed <= 3) riddleNumber = parsed;
+          }
+        }
+      }
+
+      // ── Path 2: Direct MoveCall — inputs[1] is the riddle number ────────
+      if (isNaN(riddleNumber)) {
+        const isDirect =
+          txData?.moveCall?.package  === V4_PKG &&
+          txData?.moveCall?.module   === 'tasks' &&
+          txData?.moveCall?.function === 'submit_riddle_answer';
+
+        if (isDirect) {
+          const val = inputs[1]?.value;
+          if (val !== undefined) {
+            const parsed = parseInt(String(val), 10);
+            if (parsed >= 1 && parsed <= 3) riddleNumber = parsed;
+          }
+        }
+      }
+
+      // ── Path 3: Last resort — scan all pure u64 inputs for 1, 2, or 3 ──
+      if (isNaN(riddleNumber)) {
+        for (const inp of inputs) {
+          if (
+            inp?.type      === 'pure' &&
+            inp?.valueType === 'u64'  &&
+            inp?.value     !== undefined
+          ) {
+            const parsed = parseInt(String(inp.value), 10);
+            if (parsed >= 1 && parsed <= 3) {
+              riddleNumber = parsed;
+              break;
+            }
+          }
+        }
+      }
+
+      // ── All paths failed — log to skipped for DB inspection ─────────────
+      if (isNaN(riddleNumber)) {
+        skipped.push({
+          txDigest:  tx.digest,
+          rawInputs: inputs,
+          rawTxns:   txns,
+        });
+        continue;
+      }
+
+      data.push({
+        txDigest:       tx.digest,
+        timestampMs:    tx.timestampMs,
+        wallet_address: tx.transaction.data.sender,
+        riddle_number:  riddleNumber,
+      });
+    }
+
+    const nextCursor: EventCursor | null = result.nextCursor
+      ? { txDigest: result.nextCursor, eventSeq: '0' }
+      : null;
+
+    return { data, nextCursor, hasNextPage: result.hasNextPage, skipped };
+  } catch (err) {
+    console.error('[fetchRiddleSubmissions]', err);
+    return { data: [], nextCursor: null, hasNextPage: false, skipped: [] };
   }
-
-  // Argument at index 1 of submit_riddle_answer is the riddle number
-  // It points to an entry in the inputs array via { Input: N }
-  const riddleArg  = moveCall.arguments?.[1] as { Input?: number } | undefined;
-  const inputIndex = riddleArg?.Input;
-
-  if (inputIndex === undefined) {
-    console.warn(`[fetchRiddleSubmissions] No riddle arg index in tx ${tx.digest}`);
-    continue;
-  }
-
-  const riddleInput  = inputs[inputIndex];
-  const riddleNumber = riddleInput?.value
-    ? parseInt(String(riddleInput.value), 10)
-    : NaN;
-
-  if (isNaN(riddleNumber) || riddleNumber < 1 || riddleNumber > 3) {
-    console.warn(`[fetchRiddleSubmissions] Invalid riddle number ${riddleNumber} in tx ${tx.digest}`);
-    continue;
-  }
-
-  data.push({
-    txDigest:       tx.digest,
-    timestampMs:    tx.timestampMs,
-    wallet_address: tx.transaction.data.sender,
-    riddle_number:  riddleNumber,
-  });
 }
-
     const nextCursor: EventCursor | null = result.nextCursor
       ? { txDigest: result.nextCursor, eventSeq: '0' }
       : null;
