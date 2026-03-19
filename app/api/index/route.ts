@@ -498,27 +498,24 @@ export async function GET(req: NextRequest) {
       (cursor) => fetchRiddleSubmissions(cursor),
       async (page, db, now) => {
         const subs = dedupEvents(page.data as any[]);
-        async (page, db, now) => {
-  const subs = dedupEvents(page.data as any[]);
 
-  // ── Log skipped transactions to DB for inspection ──────────────────
-  const skipped = (page as any).skipped as Array<{
-    txDigest:  string;
-    rawInputs: unknown;
-    rawTxns:   unknown;
-  }> | undefined;
+        // ── Save skipped transactions for inspection ────────────────────
+        const skipped = (page as any).skipped as Array<{
+          txDigest:  string;
+          rawInputs: unknown;
+          rawTxns:   unknown;
+        }> | undefined;
 
-  if (skipped && skipped.length > 0) {
-    const skipRows = skipped.map(s => ({
-      tx_digest:  s.txDigest,
-      raw_inputs: s.rawInputs,
-      raw_txns:   s.rawTxns,
-    }));
-    await db
-      .from('riddle_submission_skips')
-      .upsert(skipRows, { onConflict: 'tx_digest', ignoreDuplicates: true });
-  }
-  // ── rest of writer continues as normal ─────────────────────────────
+        if (skipped && skipped.length > 0) {
+          const skipRows = skipped.map(s => ({
+            tx_digest:  s.txDigest,
+            raw_inputs: s.rawInputs,
+            raw_txns:   s.rawTxns,
+          }));
+          await db
+            .from('riddle_submission_skips')
+            .upsert(skipRows, { onConflict: 'tx_digest', ignoreDuplicates: true });
+        }
 
         const seenWallets = new Set<string>();
         const wallets = subs
@@ -541,7 +538,6 @@ export async function GET(req: NextRequest) {
           );
         }
 
-        // Seed new wallets into wallet_user_tasks so UserTasks sync picks them up
         const utSeedRows = wallets.map((w: any) => ({ wallet_address: w.address }));
         for (const b of chunk(utSeedRows, BATCH_SIZE)) {
           await withRetry(async () =>
@@ -569,14 +565,14 @@ export async function GET(req: NextRequest) {
         }
 
         const drizzletRows = subs
-  .filter((s: any) => s.riddle_number >= 1 && s.riddle_number <= 3)
-  .map((s: any) => ({
-    wallet_address: s.wallet_address,
-    source:         'riddle',
-    amount:         RIDDLE_DRIZZLETS_PER_SUBMISSION,
-    reference_id:   s.txDigest,
-    earned_at:      new Date(parseInt(s.timestampMs)).toISOString(),
-  }));
+          .filter((s: any) => s.riddle_number >= 1 && s.riddle_number <= 3)
+          .map((s: any) => ({
+            wallet_address: s.wallet_address,
+            source:         'riddle',
+            amount:         RIDDLE_DRIZZLETS_PER_SUBMISSION,
+            reference_id:   s.txDigest,
+            earned_at:      new Date(parseInt(s.timestampMs)).toISOString(),
+          }));
         for (const b of chunk(drizzletRows, BATCH_SIZE)) {
           await withRetry(async () =>
             db.from('drizzlets').upsert(b, { onConflict: 'wallet_address,reference_id' })
@@ -589,7 +585,6 @@ export async function GET(req: NextRequest) {
       }
     );
     log.riddle_submissions = riddleSubResult;
-
     // -- 8. UserTasks Sync ------------------------------------------------
     try {
       // Get up to 150 wallets that haven't been fetched yet
