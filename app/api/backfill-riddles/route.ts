@@ -57,7 +57,7 @@ async function rpcCall<T>(method: string, params: unknown[]): Promise<T> {
  */
 async function getChainSubmissionCount(objectId: string): Promise<number> {
   let total  = 0;
-  let cursor = null;
+  let cursor: string | null = null;
 
   while (true) {
     const result = await rpcCall<{
