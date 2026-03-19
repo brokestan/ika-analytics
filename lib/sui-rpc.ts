@@ -507,16 +507,30 @@ export async function fetchRiddleSubmissions(
       false,
     ]);
 
-    const data: RiddleSubmissionFlat[] = result.data.map(tx => {
-      const inputs     = tx.transaction?.data?.transaction?.inputs ?? [];
-      const riddleNum  = inputs[1]?.value ? parseInt(inputs[1].value, 10) : 0;
-      return {
-        txDigest:       tx.digest,
-        timestampMs:    tx.timestampMs,
-        wallet_address: tx.transaction.data.sender,
-        riddle_number:  riddleNum,
-      };
-    });
+    const data: RiddleSubmissionFlat[] = [];
+for (const tx of result.data) {
+  const inputs = tx.transaction?.data?.transaction?.inputs ?? [];
+  let riddleNumber = NaN;
+  for (const inp of inputs) {
+    if (inp?.type === 'pure' && inp?.valueType === 'u64' && inp?.value !== undefined) {
+      const parsed = parseInt(String(inp.value), 10);
+      if (parsed >= 1 && parsed <= 3) {
+        riddleNumber = parsed;
+        break;
+      }
+    }
+  }
+  if (isNaN(riddleNumber)) {
+    console.warn(`[fetchRiddleSubmissions] Could not find riddle number in tx ${tx.digest}`);
+    continue;
+  }
+  data.push({
+    txDigest:       tx.digest,
+    timestampMs:    tx.timestampMs,
+    wallet_address: tx.transaction.data.sender,
+    riddle_number:  riddleNumber,
+  });
+          }
 
     const nextCursor: EventCursor | null = result.nextCursor
       ? { txDigest: result.nextCursor, eventSeq: '0' }
