@@ -33,7 +33,7 @@ import { LockDuration } from '@/lib/types';
 const BATCH_SIZE      = 50;
 const RATE_LIMIT_WAIT = 1500;
 const MAX_RETRIES     = 3;
-const TIME_BUDGET_MS  = 40_000;
+const TIME_BUDGET_MS  = 50_000;
 const MAX_RUN_AGE_MS  = 2 * 60 * 1000;
 
 function getDB() {
