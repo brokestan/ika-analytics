@@ -498,6 +498,27 @@ export async function GET(req: NextRequest) {
       (cursor) => fetchRiddleSubmissions(cursor),
       async (page, db, now) => {
         const subs = dedupEvents(page.data as any[]);
+        async (page, db, now) => {
+  const subs = dedupEvents(page.data as any[]);
+
+  // ── Log skipped transactions to DB for inspection ──────────────────
+  const skipped = (page as any).skipped as Array<{
+    txDigest:  string;
+    rawInputs: unknown;
+    rawTxns:   unknown;
+  }> | undefined;
+
+  if (skipped && skipped.length > 0) {
+    const skipRows = skipped.map(s => ({
+      tx_digest:  s.txDigest,
+      raw_inputs: s.rawInputs,
+      raw_txns:   s.rawTxns,
+    }));
+    await db
+      .from('riddle_submission_skips')
+      .upsert(skipRows, { onConflict: 'tx_digest', ignoreDuplicates: true });
+  }
+  // ── rest of writer continues as normal ─────────────────────────────
 
         const seenWallets = new Set<string>();
         const wallets = subs
