@@ -462,52 +462,6 @@ export async function fetchRiddlePool(): Promise<RiddlePoolFields | null> {
 
 // ─── Riddle Submissions ───────────────────────────────────────────────────────
 
-export interface RiddleSubmissionFlat {
-  txDigest:       string;
-  timestampMs:    string;
-  wallet_address: string;
-  riddle_number:  number;
-}
-
-export async function fetchRiddleSubmissions(
-  cursor: EventCursor | null = null
-): Promise<EventPage<RiddleSubmissionFlat>> {
-  try {
-    const result = await rpcCall<{
-      data: Array<{
-        digest:      string;
-        timestampMs: string;
-        transaction: {
-          data: {
-            transaction: {
-              inputs: Array<{
-                type:       string;
-                valueType?: string;
-                value?:     string;
-              }>;
-            };
-            sender: string;
-          };
-        };
-      }>;
-      nextCursor:  string | null;
-      hasNextPage: boolean;
-    }>('suix_queryTransactionBlocks', [
-      {
-        filter: {
-          MoveFunction: {
-            package:  V4_PKG,
-            module:   'tasks',
-            function: 'submit_riddle_answer',
-          },
-        },
-        options: { showInput: true },
-      },
-      cursor ? cursor.txDigest : null,
-      100,
-      false,
-    ]);
-
     export async function fetchRiddleSubmissions(
   cursor: EventCursor | null = null
 ): Promise<EventPage<RiddleSubmissionFlat>> {
