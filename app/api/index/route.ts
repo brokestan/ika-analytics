@@ -547,13 +547,15 @@ export async function GET(req: NextRequest) {
           );
         }
 
-        const drizzletRows = subs.map((s: any) => ({
-          wallet_address: s.wallet_address,
-          source:         'riddle',
-          amount:         RIDDLE_DRIZZLETS_PER_SUBMISSION,
-          reference_id:   s.txDigest,
-          earned_at:      new Date(parseInt(s.timestampMs)).toISOString(),
-        }));
+        const drizzletRows = subs
+  .filter((s: any) => s.riddle_number >= 1 && s.riddle_number <= 3)
+  .map((s: any) => ({
+    wallet_address: s.wallet_address,
+    source:         'riddle',
+    amount:         RIDDLE_DRIZZLETS_PER_SUBMISSION,
+    reference_id:   s.txDigest,
+    earned_at:      new Date(parseInt(s.timestampMs)).toISOString(),
+  }));
         for (const b of chunk(drizzletRows, BATCH_SIZE)) {
           await withRetry(async () =>
             db.from('drizzlets').upsert(b, { onConflict: 'wallet_address,reference_id' })
