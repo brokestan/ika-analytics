@@ -138,7 +138,34 @@ export default function LeaderboardTable({ data, loading }: Props) {
   return (
     <div className="card animate-fade-in" style={{ overflow: 'visible' }}>
       {/* ── Desktop table (scrollable horizontally) ──────────────────────────── */}
-      <div className="hidden md:block overflow-x-auto">
+      <div
+        className="hidden md:block overflow-x-auto cursor-grab active:cursor-grabbing select-none"
+        ref={(el) => {
+          if (!el) return;
+          let isDown = false;
+          let startX = 0;
+          let scrollLeft = 0;
+          el.addEventListener('mousedown', (e) => {
+            isDown = true;
+            startX = e.pageX - el.offsetLeft;
+            scrollLeft = el.scrollLeft;
+          });
+          el.addEventListener('mouseleave', () => { isDown = false; });
+          el.addEventListener('mouseup', () => { isDown = false; });
+          el.addEventListener('mousemove', (e) => {
+            if (!isDown) return;
+            e.preventDefault();
+            const x = e.pageX - el.offsetLeft;
+            el.scrollLeft = scrollLeft - (x - startX) * 1.5;
+          });
+          el.addEventListener('wheel', (e) => {
+            if (e.shiftKey) {
+              e.preventDefault();
+              el.scrollLeft += e.deltaY;
+            }
+          }, { passive: false });
+        }}
+      >
         <table className="w-full min-w-[1280px]" aria-label="Leaderboard">
           <thead>
             <tr className="border-b border-ika-border bg-white/[0.02]">
