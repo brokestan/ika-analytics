@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from 'next';
+import { Analytics } from '@vercel/analytics/react';
 import { Syne, Space_Grotesk, JetBrains_Mono } from 'next/font/google';
 import './globals.css';
 import Navbar from '@/components/Navbar';
@@ -64,6 +65,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <main id="main-content" className="flex-1">
             {children}
           </main>
+          <Analytics />
           <footer className="border-t border-ika-border/60 py-4 px-6">
             <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-2 text-xs text-ika-muted">
               <div className="flex items-center gap-2">
