@@ -310,9 +310,9 @@ export default function LeaderboardPage() {
               <ChevronRight className="w-4 h-4" />
             </button>
 
-            {/* ── Go to page input ─────────────────────────────────── */}
-            <div className="flex items-center gap-1.5 ml-1">
-              <span className="text-xs text-ika-muted hidden sm:inline">Go to</span>
+            {/* ── Go to page — desktop only inline ─────────────────── */}
+            <div className="hidden sm:flex items-center gap-1.5 ml-1">
+              <span className="text-xs text-ika-muted">Go to</span>
               <input
                 type="number"
                 min={1}
@@ -330,7 +330,31 @@ export default function LeaderboardPage() {
                 className="w-14 bg-ika-card border border-ika-border rounded-lg px-2 py-1.5 text-xs text-center font-mono text-ika-text placeholder-ika-muted/50 focus:outline-none focus:border-ika-pink/60 focus:ring-1 focus:ring-ika-pink/30 transition-all [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
               />
             </div>
+
           </div>
+
+          {/* ── Go to page — mobile full width ───────────────────────── */}
+          <div className="flex sm:hidden items-center justify-center gap-2 mt-3">
+            <span className="text-xs text-ika-muted">Jump to page</span>
+            <input
+              type="number"
+              min={1}
+              max={totalPages}
+              placeholder={String(page)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  const val = parseInt((e.target as HTMLInputElement).value, 10);
+                  if (!isNaN(val)) {
+                    handlePage(val);
+                    (e.target as HTMLInputElement).value = '';
+                  }
+                }
+              }}
+              className="w-20 bg-ika-card border border-ika-border rounded-lg px-3 py-2 text-sm text-center font-mono text-ika-text placeholder-ika-muted/50 focus:outline-none focus:border-ika-pink/60 focus:ring-1 focus:ring-ika-pink/30 transition-all [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+            />
+            <span className="text-xs text-ika-muted">of {totalPages}</span>
+          </div>
+
         </nav>
       )}
     </div>
