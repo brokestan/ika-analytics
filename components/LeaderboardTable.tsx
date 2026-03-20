@@ -136,8 +136,7 @@ export default function LeaderboardTable({ data, loading }: Props) {
   }
 
   return (
-    <div className="card overflow-hidden animate-fade-in">
-
+    <div className="card animate-fade-in" style={{ overflow: 'visible' }}>
       {/* ── Desktop table (scrollable horizontally) ──────────────────────────── */}
       <div className="hidden md:block overflow-x-auto">
         <table className="w-full min-w-[1280px]" aria-label="Leaderboard">
