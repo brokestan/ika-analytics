@@ -3,7 +3,7 @@ import { Analytics } from '@vercel/analytics/react';
 import { Syne, Space_Grotesk, JetBrains_Mono } from 'next/font/google';
 import './globals.css';
 import Navbar from '@/components/Navbar';
-
+import Image from 'next/image';
 const fontDisplay = Syne({
   subsets: ['latin'],
   weight: ['400', '600', '700', '800'],
