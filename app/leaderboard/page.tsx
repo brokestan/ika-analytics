@@ -309,6 +309,27 @@ export default function LeaderboardPage() {
               <span className="hidden sm:inline">Next</span>
               <ChevronRight className="w-4 h-4" />
             </button>
+
+            {/* ── Go to page input ─────────────────────────────────── */}
+            <div className="flex items-center gap-1.5 ml-1">
+              <span className="text-xs text-ika-muted hidden sm:inline">Go to</span>
+              <input
+                type="number"
+                min={1}
+                max={totalPages}
+                placeholder={String(page)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    const val = parseInt((e.target as HTMLInputElement).value, 10);
+                    if (!isNaN(val)) {
+                      handlePage(val);
+                      (e.target as HTMLInputElement).value = '';
+                    }
+                  }
+                }}
+                className="w-14 bg-ika-card border border-ika-border rounded-lg px-2 py-1.5 text-xs text-center font-mono text-ika-text placeholder-ika-muted/50 focus:outline-none focus:border-ika-pink/60 focus:ring-1 focus:ring-ika-pink/30 transition-all [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+              />
+            </div>
           </div>
         </nav>
       )}
