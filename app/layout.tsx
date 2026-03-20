@@ -73,7 +73,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               <div className="flex items-center gap-3">
                 <div className="relative flex-shrink-0">
                   <Image
-                    src="/king.jpeg"
+                    src="/King.jpeg"
                     alt="King"
                     width={44}
                     height={44}
