@@ -66,17 +66,40 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             {children}
           </main>
           <Analytics />
-          <footer className="border-t border-ika-border/60 py-4 px-6">
-            <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-2 text-xs text-ika-muted">
-              <div className="flex items-center gap-2">
-                <span className="font-mono text-ika-dim">IKA Analytics</span>
-                <span>·</span>
-                <span>Built for the Sui Ecosystem</span>
+          <footer className="border-t border-ika-border/60 py-6 px-6">
+            <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-ika-muted">
+              
+              {/* ── Left: Avatar + title ─────────────────────────────── */}
+              <div className="flex items-center gap-3">
+                <div className="relative flex-shrink-0">
+                  <Image
+                    src="/king.jpeg"
+                    alt="King"
+                    width={44}
+                    height={44}
+                    className="rounded-full object-cover ring-2 ring-ika-pink/40"
+                  />
+                  <span className="absolute -bottom-0.5 -right-0.5 w-3 h-3 bg-emerald-400 rounded-full border-2 border-ika-dark" />
+                </div>
+                <div className="leading-tight">
+                  <p className="text-white font-semibold text-sm">KingSAB</p>
+                  <p className="text-ika-muted text-[10px]">VibeCoded</p>
+                </div>
               </div>
-              <div className="flex items-center gap-1.5">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                <span className="text-ika-pink font-medium">Indexed every 24h</span>
+
+              {/* ── Right: branding + status ─────────────────────────── */}
+              <div className="flex flex-col items-center sm:items-end gap-1.5">
+                <div className="flex items-center gap-2">
+                  <span className="font-mono text-ika-dim">IKA Analytics</span>
+                  <span>·</span>
+                  <span>Built for the Sui Ecosystem</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                  <span className="text-ika-pink font-medium">Indexed every 24h</span>
+                </div>
               </div>
+
             </div>
           </footer>
         </div>
