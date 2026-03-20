@@ -915,7 +915,7 @@ while (true) {
 
   const ts = Date.now();
   let totalIka = 0, totalISUI = 0, totalActiveDrz = 0;
-  let isuiDrz = 0, unlockedDrz = 0, riddleDrz = 0;
+  let isuiDrz = 0, unlockedDrz = 0, riddleDrz = 0, nftDrz = 0;
 
   type W = { ika: number; isui: number; drizzlets: number; locks: number };
   const wmap: Record<string, W> = {};
@@ -948,9 +948,10 @@ while (true) {
   for (const d of histDrz || []) {
     ensure(d.wallet_address);
     wmap[d.wallet_address].drizzlets += Number(d.amount);
-    if (d.source === 'isui_lock') isuiDrz    += Number(d.amount);
-    if (d.source === 'unlock')    unlockedDrz += Number(d.amount);
-    if (d.source === 'riddle')    riddleDrz   += Number(d.amount);
+    if (d.source === 'isui_lock')  isuiDrz    += Number(d.amount);
+    if (d.source === 'unlock')     unlockedDrz += Number(d.amount);
+    if (d.source === 'riddle')     riddleDrz   += Number(d.amount);
+    if (d.source === 'nft_reveal') nftDrz      += Number(d.amount);
   }
 
   const walletRows = Object.entries(wmap).map(([addr, s]) => ({
@@ -1004,7 +1005,7 @@ while (true) {
     { onConflict: 'id' }
   );
 
-  const totalDrizzlets = totalActiveDrz + unlockedDrz + isuiDrz + riddleDrz;
+  const totalDrizzlets = totalActiveDrz + unlockedDrz + isuiDrz + riddleDrz + nftDrz;
   const weightedRate = totalIka > 0
     ? (activeLocks || [])
         .filter(l => l.asset_type === 'ika')
