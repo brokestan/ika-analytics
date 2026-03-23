@@ -15,7 +15,8 @@ export default function LeaderboardPage() {
   const [page,      setPage]      = useState(1);
   const [data,      setData]      = useState<LeaderboardEntry[]>([]);
   const [total,     setTotal]     = useState(0);      // filtered count (for pagination)
-  const [totalAll,  setTotalAll]  = useState(0);      // all wallets (for header)
+  const [totalAll,  setTotalAll]  = useState(0);
+  const [totalDrz,  setTotalDrz]  = useState(0);      // all wallets (for header)
   const [loading,   setLoading]   = useState(true);
   const [error,     setError]     = useState('');
   const [sortBy,    setSortBy]    = useState<SortBy>('total_drizzlets');
@@ -40,12 +41,14 @@ export default function LeaderboardPage() {
         data: LeaderboardEntry[];
         total: number;
         total_all: number;
+        total_drizzlets_all: number;
         error?: string;
       };
       if (json.error) throw new Error(json.error);
       setData(json.data || []);
       setTotal(json.total || 0);
-      setTotalAll(prev => json.total_all > 0 ? json.total_all : prev); // never overwrite with 0
+      setTotalAll(prev => json.total_all > 0 ? json.total_all : prev);
+      setTotalDrz(prev => json.total_drizzlets_all > 0 ? json.total_drizzlets_all : prev); // never overwrite with 0
     } catch {
       setError('Failed to load leaderboard. Please try again.');
       setData([]);
@@ -246,7 +249,7 @@ export default function LeaderboardPage() {
       )}
 
       {/* ── Table ──────────────────────────────────────────────────────────── */}
-      <LeaderboardTable data={data} loading={loading} />
+      <LeaderboardTable data={data} loading={loading} totalDrz={totalDrz} />
 
       {/* ── Pagination ─────────────────────────────────────────────────────── */}
       {totalPages > 1 && !loading && (
