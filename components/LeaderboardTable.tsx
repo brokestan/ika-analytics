@@ -8,6 +8,7 @@ import type { LeaderboardEntry } from '@/app/api/leaderboard/route';
 interface Props {
   data:     LeaderboardEntry[];
   loading?: boolean;
+  totalDrz?: number;
 }
 
 // ── Sub-components ────────────────────────────────────────────────────────────
@@ -122,7 +123,7 @@ function LoadingSkeleton() {
 
 // ── Main Table ────────────────────────────────────────────────────────────────
 
-export default function LeaderboardTable({ data, loading }: Props) {
+export default function LeaderboardTable({ data, loading, totalDrz = 0 }: Props) {
   if (loading) return <LoadingSkeleton />;
 
   if (!data.length) {
@@ -286,6 +287,11 @@ export default function LeaderboardTable({ data, loading }: Props) {
                   <span className="font-mono font-bold text-[13px] text-ika-pink">
                     {formatNumber(row.total_drizzlets, 0)}
                   </span>
+                  {totalDrz > 0 && (
+                    <div className="text-[10px] text-ika-muted font-mono mt-0.5">
+                      {((row.total_drizzlets / totalDrz) * 100).toFixed(2)}% of total
+                    </div>
+                  )}
                 </td>
               </tr>
             ))}
@@ -320,6 +326,11 @@ export default function LeaderboardTable({ data, loading }: Props) {
                   {formatNumber(row.total_drizzlets, 0)}
                 </p>
                 <p className="text-[11px] text-ika-muted mt-0.5">drizzlets</p>
+                {totalDrz > 0 && (
+                  <p className="text-[10px] text-ika-muted/70 font-mono mt-0.5">
+                    {((row.total_drizzlets / totalDrz) * 100).toFixed(2)}%
+                  </p>
+                )}
               </div>
             </div>
 
