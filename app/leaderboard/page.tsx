@@ -217,7 +217,7 @@ export default function LeaderboardPage() {
                   <div><span className="text-white font-medium">NFTs Revealed</span> — Number of Squid Maiden NFTs revealed, with total drizzlets earned from reveals shown below</div>
                   <div><span className="text-white font-medium">Locked Drizzlets</span> — Drizzlets silently accumulating from positions that are still locked and have not been claimed yet</div>
                   <div><span className="text-white font-medium">Unlocked Drizzlets</span> — All realized drizzlets: from unlocked staking positions + NFT reveals + riddle submissions</div>
-                  <div><span className="text-white font-medium">Total Drizzlets</span> — Locked + Unlocked combined. Your real drizzlet balance.</div>
+                  <div><span className="text-white font-medium">Total Drizzlets</span> — Locked + Unlocked combined. Your real drizzlet balance. The percentage shown below is your share of all drizzlets earned across the entire ecosystem.</div>
                 </div>
                 <button
                   onClick={() => setShowInfo(false)}
