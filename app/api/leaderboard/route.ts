@@ -75,6 +75,13 @@ export async function GET(req: NextRequest) {
       .from('wallets')
       .select('address', { count: 'exact', head: true });
 
+    const { data: dCache } = await db
+      .from('dashboard_cache')
+      .select('total_drizzlets_earned')
+      .eq('id', 'main')
+      .single();
+    const totalDrizzletsAll = Number(dCache?.total_drizzlets_earned ?? 0);
+
     // ── 2. Paginated wallet rows ───────────────────────────────────────────────
     let walletQuery = db
       .from('wallets')
@@ -228,12 +235,13 @@ export async function GET(req: NextRequest) {
     });
 
     return NextResponse.json({
-      data:      entries,
-      total:     filteredCount || 0,
-      total_all: totalAll      || 0,
+      data:               entries,
+      total:              filteredCount    || 0,
+      total_all:          totalAll         || 0,
+      total_drizzlets_all: totalDrizzletsAll,
       page,
-      per_page:  perPage,
-      error:     null,
+      per_page:           perPage,
+      error:              null,
     });
 
   } catch (err) {
