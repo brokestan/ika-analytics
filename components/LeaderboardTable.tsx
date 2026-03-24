@@ -289,7 +289,7 @@ export default function LeaderboardTable({ data, loading, totalDrz = 0 }: Props)
                   </span>
                   {totalDrz > 0 && (
                     <div className="text-[10px] text-ika-muted font-mono mt-0.5">
-                      {((row.total_drizzlets / totalDrz) * 100).toFixed(2)}% of total
+                      {((row.total_drizzlets / totalDrz) * 100).toFixed(3)}% of total
                     </div>
                   )}
                 </td>
@@ -328,7 +328,7 @@ export default function LeaderboardTable({ data, loading, totalDrz = 0 }: Props)
                 <p className="text-[11px] text-ika-muted mt-0.5">drizzlets</p>
                 {totalDrz > 0 && (
                   <p className="text-[10px] text-ika-muted/70 font-mono mt-0.5">
-                    {((row.total_drizzlets / totalDrz) * 100).toFixed(2)}%
+                    {((row.total_drizzlets / totalDrz) * 100).toFixed(3)}%
                   </p>
                 )}
               </div>
