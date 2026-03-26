@@ -26,6 +26,10 @@ const V3_PKG =
   process.env.IKA_V3_PACKAGE_ID ||
   '0x8349769aebae145032813465696e19958881857b762aba5411ff9cd07c8214e5';
 
+const AIRDROP_PKG = '0x5a6ae39fd84a871e94c88badc7689debae22119461ba1581f674bfe50acc1271';
+const AIRDROP_POOL_OBJECT = '0xf040974b98d008efccf0cee6cbaf0a456a76536601248d99fb9625d7fc8185e7';
+const BUFFER_PKG = '0xfeecbb29272d34b78c402b894ea63b48cff4a717dafc96df8aa205edca89610c';
+
 export const RIDDLE_DRIZZLETS_PER_SUBMISSION = 31;
 
 // Event type strings — exact names confirmed from package tx list
@@ -844,4 +848,184 @@ export async function fetchUserTasksObjects(
   }
   return map;
 }
+// ─── Airdrop Pool ─────────────────────────────────────────────────────────────
 
+export interface AirdropPoolData {
+  totalPool:  number;
+  balance:    number;
+  claimed:    number;
+  pctClaimed: number;
+}
+
+export async function fetchAirdropPoolData(): Promise<AirdropPoolData | null> {
+  try {
+    const obj = await rpcCall<any>('sui_getObject', [
+      AIRDROP_POOL_OBJECT,
+      { showContent: true },
+    ]);
+    const fields = obj?.data?.content?.fields;
+    if (!fields) return null;
+    const totalPool = Number(fields.total_pool_amount) / 1e9;
+    const balance   = Number(fields.balance)           / 1e9;
+    const claimed   = totalPool - balance;
+    return {
+      totalPool,
+      balance,
+      claimed,
+      pctClaimed: totalPool > 0 ? (claimed / totalPool) * 100 : 0,
+    };
+  } catch (err) {
+    console.error('[fetchAirdropPoolData]', err);
+    return null;
+  }
+}
+
+// ─── Airdrop Prepare Recipients ───────────────────────────────────────────────
+
+function decodeBcsAddresses(bytes: number[]): string[] {
+  // BCS vector<address>: ULEB128 length + 32 bytes per address
+  let offset = 0;
+  let len = 0, shift = 0;
+  while (offset < bytes.length) {
+    const b = bytes[offset++];
+    len |= (b & 0x7f) << shift;
+    if ((b & 0x80) === 0) break;
+    shift += 7;
+  }
+  const addresses: string[] = [];
+  for (let i = 0; i < len; i++) {
+    const chunk = bytes.slice(offset + i * 32, offset + (i + 1) * 32);
+    addresses.push('0x' + chunk.map(b => b.toString(16).padStart(2, '0')).join(''));
+  }
+  return addresses;
+}
+
+export interface PrepareRecipientsFlat {
+  wallet_address:    string;
+  allocation_amount: number;
+  sbt_required:      boolean;
+  prepare_tx_digest: string;
+}
+
+export async function fetchPrepareRecipientsBatch(
+  txDigests: string[]
+): Promise<PrepareRecipientsFlat[]> {
+  if (txDigests.length === 0) return [];
+  const results = await rpcCall<Array<any | null>>(
+    'sui_multiGetTransactionBlocks',
+    [txDigests, { showInput: true, showEffects: false, showEvents: false }]
+  );
+
+  const out: PrepareRecipientsFlat[] = [];
+  for (let i = 0; i < txDigests.length; i++) {
+    const tx = results[i];
+    if (!tx) continue;
+    const inputs = tx.transaction?.data?.transaction?.inputs ?? [];
+
+    // inputs[2] and inputs[3] are address byte chunks, inputs[4] amounts, inputs[5] bools
+    const chunk1: number[] = inputs[2]?.value ?? [];
+    const chunk2: number[] = inputs[3]?.value ?? [];
+    const amounts: string[] = inputs[4]?.value ?? [];
+    const sbts:    boolean[] = inputs[5]?.value ?? [];
+
+    const addresses = [
+      ...decodeBcsAddresses(chunk1),
+      ...decodeBcsAddresses(chunk2),
+    ];
+
+    for (let j = 0; j < addresses.length; j++) {
+      out.push({
+        wallet_address:    addresses[j],
+        allocation_amount: Number(amounts[j] ?? '0') / 1e9,
+        sbt_required:      sbts[j] ?? false,
+        prepare_tx_digest: txDigests[i],
+      });
+    }
+  }
+  return out;
+}
+
+// ─── Airdrop Claims ───────────────────────────────────────────────────────────
+
+export interface AirdropClaimFlat {
+  tx_digest:      string;
+  wallet_address: string;
+  claimed_amount: number;
+  claim_type:     'claim' | 'claim_sbt';
+  sbt_id:         string | null;
+  claimed_at:     string;
+}
+
+export async function fetchAirdropClaims(
+  claimType: 'claim' | 'claim_sbt',
+  cursor: EventCursor | null = null
+): Promise<EventPage<AirdropClaimFlat>> {
+  try {
+    const result = await rpcCall<{
+      data: Array<{
+        digest:          string;
+        timestampMs:     string;
+        effects?: { status?: { status: string } };
+        transaction: {
+          data: {
+            transaction: {
+              inputs?: Array<{ type: string; valueType?: string; value?: any }>;
+            };
+            sender: string;
+          };
+        };
+        objectChanges?: Array<{ type: string; objectType?: string; objectId?: string }>;
+      }>;
+      nextCursor:  string | null;
+      hasNextPage: boolean;
+    }>('suix_queryTransactionBlocks', [
+      {
+        filter: {
+          MoveFunction: {
+            package:  AIRDROP_PKG,
+            module:   'distribution',
+            function: claimType,
+          },
+        },
+        options: { showInput: true, showEffects: true, showObjectChanges: true },
+      },
+      cursor ? cursor.txDigest : null,
+      100,
+      false,
+    ]);
+
+    const data: AirdropClaimFlat[] = [];
+    for (const tx of result.data) {
+      if (tx.effects?.status?.status !== 'success') continue;
+      const inputs = tx.transaction?.data?.transaction?.inputs ?? [];
+      const claimedAmount = Number(inputs[2]?.value ?? '0') / 1e9;
+
+      // Find SBT objectId from objectChanges for claim_sbt
+      let sbtId: string | null = null;
+      if (claimType === 'claim_sbt') {
+        const sbtChange = (tx.objectChanges ?? []).find((c: any) =>
+          c.objectType?.includes('::sbt::SoulBoundToken')
+        );
+        sbtId = sbtChange?.objectId ?? null;
+      }
+
+      data.push({
+        tx_digest:      tx.digest,
+        wallet_address: tx.transaction.data.sender,
+        claimed_amount: claimedAmount,
+        claim_type:     claimType,
+        sbt_id:         sbtId,
+        claimed_at:     new Date(parseInt(tx.timestampMs)).toISOString(),
+      });
+    }
+
+    const nextCursor: EventCursor | null = result.nextCursor
+      ? { txDigest: result.nextCursor, eventSeq: '0' }
+      : null;
+
+    return { data, nextCursor, hasNextPage: result.hasNextPage };
+  } catch (err) {
+    console.error(`[fetchAirdropClaims:${claimType}]`, err);
+    return { data: [], nextCursor: null, hasNextPage: false };
+  }
+}
