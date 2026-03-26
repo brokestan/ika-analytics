@@ -2,12 +2,13 @@
 import Link from 'next/link';
 import Image from 'next/image';
 import { usePathname } from 'next/navigation';
-import { BarChart3, Trophy, ExternalLink } from 'lucide-react';
+import { BarChart3, Trophy, Droplets, ExternalLink } from 'lucide-react';
 import clsx from 'clsx';
 
 const navLinks = [
   { href: '/',            label: 'Dashboard',   icon: BarChart3 },
   { href: '/leaderboard', label: 'Leaderboard', icon: Trophy    },
+  { href: '/airdrop', label: 'Airdrop', icon: Droplets },
 ];
 
 export default function Navbar() {
