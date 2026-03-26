@@ -45,6 +45,8 @@ export interface LeaderboardEntry {
   riddle_two_solved:  boolean;
   riddle_three_solved:boolean;
   community_code_used:boolean;
+  airdrop_amount:     number | null;
+  airdrop_sbt:        boolean;
   total_drizzlets:    number;   // computed sum of all sources
 }
 
@@ -123,6 +125,12 @@ export async function GET(req: NextRequest) {
       .select('wallet_address, riddle_one_solved, riddle_two_solved, riddle_three_solved, community_code')
       .in('wallet_address', addresses);
 
+    // ── 5b. Airdrop allocations for this page ─────────────────────────────────
+    const { data: airdropRows } = await db
+      .from('airdrop_allocations')
+      .select('wallet_address, allocation_amount, sbt_required')
+      .in('wallet_address', addresses);
+
     // ── 6. Compute per-wallet drizzlet breakdown ──────────────────────────────
     const now = Date.now();
 
@@ -157,6 +165,14 @@ export async function GET(req: NextRequest) {
       }
     }
 
+    // Index airdrop rows
+    const airdropByWallet: Record<string, { allocation_amount: number; sbt_required: boolean }> = {};
+    for (const a of (airdropRows || [])) {
+      airdropByWallet[a.wallet_address] = {
+        allocation_amount: Number(a.allocation_amount),
+        sbt_required:      !!a.sbt_required,
+      };
+    }
     // Index task rows
     const taskByWallet: Record<string, {
       riddle_one_solved:   boolean;
@@ -230,6 +246,8 @@ export async function GET(req: NextRequest) {
         riddle_two_solved:   task?.riddle_two_solved   ?? false,
         riddle_three_solved: task?.riddle_three_solved ?? false,
         community_code_used: !!(task?.community_code),
+        airdrop_amount:      airdropByWallet[addr]?.allocation_amount ?? null,
+        airdrop_sbt:         airdropByWallet[addr]?.sbt_required ?? false,
         total_drizzlets:     total,
       };
     });
