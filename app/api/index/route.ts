@@ -689,7 +689,7 @@ const airdropClaimResult = await processStream(
   db, now, startMs, 'airdrop_claim_txs',
   (cursor) => fetchAirdropClaims('claim', cursor),
   async (page, db, now) => {
-    const claims = dedupEvents(page.data as any[]);
+    const claims = page.data as any[];
     if (claims.length === 0) return 0;
     const rows = claims.map((c: any) => ({
       tx_digest:      c.tx_digest,
@@ -715,7 +715,7 @@ const airdropClaimSbtResult = await processStream(
   db, now, startMs, 'airdrop_claim_sbt_txs',
   (cursor) => fetchAirdropClaims('claim_sbt', cursor),
   async (page, db, now) => {
-    const claims = dedupEvents(page.data as any[]);
+    const claims = page.data as any[];
     if (claims.length === 0) return 0;
     const rows = claims.map((c: any) => ({
       tx_digest:      c.tx_digest,
