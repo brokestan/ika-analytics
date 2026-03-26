@@ -185,6 +185,7 @@ export default function LeaderboardTable({ data, loading, totalDrz = 0 }: Props)
 
               <TH right sub="Drizzlets earned">NFTs Revealed</TH>
               <TH center>Community Code</TH>
+              <TH right>IKA Drop</TH>
               <TH right>Locked Drz</TH>
               <TH right>Unlocked Drz</TH>
               <TH right>Total Drizzlets</TH>
@@ -271,6 +272,16 @@ export default function LeaderboardTable({ data, loading, totalDrz = 0 }: Props)
                 <td className="px-3 py-3 text-center">
                   <YesNo value={row.community_code_used} />
                 </td>
+               
+                <td className="px-3 py-3 text-right">
+  {row.airdrop_amount !== null ? (
+    <span className={`font-mono text-[12px] tabular-nums ${row.airdrop_sbt ? 'text-violet-400' : 'text-ika-pink'}`}>
+      {formatNumber(row.airdrop_amount, 0)}
+    </span>
+  ) : (
+    <span className="text-ika-muted/40 text-xs">—</span>
+  )}
+</td>
 
                 {/* Locked Drizzlets */}
                 <td className="px-3 py-3 text-right">
