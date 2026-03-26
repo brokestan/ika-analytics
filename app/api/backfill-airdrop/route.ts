@@ -13,7 +13,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { fetchPrepareRecipientsBatch } from '@/lib/sui-rpc';
 
-const PAGES_PER_RUN   = 5;
+const PAGES_PER_RUN   = 25;
 const TIME_BUDGET_MS  = 45_000;
 const AIRDROP_PKG     = '0x5a6ae39fd84a871e94c88badc7689debae22119461ba1581f674bfe50acc1271';
 
