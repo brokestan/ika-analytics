@@ -14,6 +14,7 @@ import {
   fetchRiddlePool,
   fetchRiddleSubmissions,
   fetchV3RiddleSubmissions,
+  fetchAirdropClaims,
   fetchDurationsForBatch,
   toHumanIka,
   toHumanISUI,
@@ -192,6 +193,8 @@ export async function GET(req: NextRequest) {
         clearCheckpoint(db, 'isui_unlock_events'),
         clearCheckpoint(db, 'mfsm_events'),
         clearCheckpoint(db, 'riddle_submission_txs'),
+        clearCheckpoint(db, 'airdrop_claim_txs'),
+        clearCheckpoint(db, 'airdrop_claim_sbt_txs'),
       ]);
       console.log('[Indexer] Checkpoints cleared - full mode');
     }
@@ -681,7 +684,60 @@ export async function GET(req: NextRequest) {
     );
     log.v3_riddle_submissions = v3RiddleSubResult;
 
-    // -- 8. UserTasks Sync------------------------------------------------------
+    // -- 8. Airdrop Claims (daily trickle after backfill) ----------------------
+const airdropClaimResult = await processStream(
+  db, now, startMs, 'airdrop_claim_txs',
+  (cursor) => fetchAirdropClaims('claim', cursor),
+  async (page, db, now) => {
+    const claims = dedupEvents(page.data as any[]);
+    if (claims.length === 0) return 0;
+    const rows = claims.map((c: any) => ({
+      tx_digest:      c.tx_digest,
+      wallet_address: c.wallet_address,
+      claimed_amount: c.claimed_amount,
+      claim_type:     c.claim_type,
+      sbt_id:         c.sbt_id,
+      claimed_at:     c.claimed_at,
+    }));
+    for (const b of chunk(rows, BATCH_SIZE)) {
+      await withRetry(async () =>
+        db.from('airdrop_claims').upsert(b, { onConflict: 'tx_digest', ignoreDuplicates: true })
+          .then(r => { if (r.error) throw new Error(r.error.message); return r; }),
+        'airdrop-claims-upsert'
+      );
+    }
+    return rows.length;
+  }
+);
+log.airdrop_claims = airdropClaimResult;
+
+const airdropClaimSbtResult = await processStream(
+  db, now, startMs, 'airdrop_claim_sbt_txs',
+  (cursor) => fetchAirdropClaims('claim_sbt', cursor),
+  async (page, db, now) => {
+    const claims = dedupEvents(page.data as any[]);
+    if (claims.length === 0) return 0;
+    const rows = claims.map((c: any) => ({
+      tx_digest:      c.tx_digest,
+      wallet_address: c.wallet_address,
+      claimed_amount: c.claimed_amount,
+      claim_type:     c.claim_type,
+      sbt_id:         c.sbt_id,
+      claimed_at:     c.claimed_at,
+    }));
+    for (const b of chunk(rows, BATCH_SIZE)) {
+      await withRetry(async () =>
+        db.from('airdrop_claims').upsert(b, { onConflict: 'tx_digest', ignoreDuplicates: true })
+          .then(r => { if (r.error) throw new Error(r.error.message); return r; }),
+        'airdrop-claim-sbt-upsert'
+      );
+    }
+    return rows.length;
+  }
+);
+log.airdrop_claims_sbt = airdropClaimSbtResult;
+
+    // -- 9. UserTasks Sync------------------------------------------------------
     try {
       // Get up to 150 wallets that haven't been fetched yet
       const { data: pending } = await db
@@ -772,7 +828,9 @@ export async function GET(req: NextRequest) {
       (isuiUnlockResult as StreamResult).hasMore ||
       (mfsmResult       as StreamResult).hasMore ||
       (riddleSubResult  as StreamResult).hasMore ||
-      (v3RiddleSubResult  as StreamResult).hasMore;
+      (v3RiddleSubResult  as StreamResult).hasMore ||
+      (airdropClaimResult    as StreamResult).hasMore ||
+      (airdropClaimSbtResult as StreamResult).hasMore;
 
     log.has_more     = hasMore;
     log.elapsed_ms   = Date.now() - startMs;
