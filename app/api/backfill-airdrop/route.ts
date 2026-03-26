@@ -58,7 +58,7 @@ async function getAllPrepareRecipientDigests(): Promise<string[]> {
   };
 
   while (true) {
-    const result = await rpcCall<DigestPage>('suix_queryTransactionBlocks', [
+    const result: DigestPage = await rpcCall<DigestPage>('suix_queryTransactionBlocks', [
       {
         filter: {
           MoveFunction: {
