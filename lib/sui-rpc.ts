@@ -923,15 +923,30 @@ export async function fetchPrepareRecipientsBatch(
     const inputs = tx.transaction?.data?.transaction?.inputs ?? [];
 
     // inputs[2] and inputs[3] are address byte chunks, inputs[4] amounts, inputs[5] bools
-    const chunk1: number[] = inputs[2]?.value ?? [];
-    const chunk2: number[] = inputs[3]?.value ?? [];
-    const amounts: string[] = inputs[4]?.value ?? [];
-    const sbts:    boolean[] = inputs[5]?.value ?? [];
+    // Detect layout: if inputs[3] is vector<u64> it's single-chunk layout
+    const isSingleChunk = inputs[3]?.valueType === 'vector<u64>';
 
-    const addresses = [
-      ...decodeBcsAddresses(chunk1),
-      ...decodeBcsAddresses(chunk2),
-    ];
+    let addresses: string[];
+    let amounts:   string[];
+    let sbts:      boolean[];
+
+    if (isSingleChunk) {
+      // Layout B: one address chunk
+      const chunk: number[] = inputs[2]?.value ?? [];
+      addresses = decodeBcsAddresses(chunk);
+      amounts   = inputs[3]?.value ?? [];
+      sbts      = inputs[4]?.value ?? [];
+    } else {
+      // Layout A: two address chunks merged via buffer helper
+      const chunk1: number[] = inputs[2]?.value ?? [];
+      const chunk2: number[] = inputs[3]?.value ?? [];
+      addresses = [
+        ...decodeBcsAddresses(chunk1),
+        ...decodeBcsAddresses(chunk2),
+      ];
+      amounts = inputs[4]?.value ?? [];
+      sbts    = inputs[5]?.value ?? [];
+    }
 
     for (let j = 0; j < addresses.length; j++) {
       out.push({
