@@ -3,8 +3,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { fetchAirdropClaims } from '@/lib/sui-rpc';
 
-const PAGES_PER_RUN  = 10;
-const TIME_BUDGET_MS = 45_000;
+const PAGES_PER_RUN  = 15;
+const TIME_BUDGET_MS = 49_000;
 const BATCH_SIZE     = 100;
 
 function getDB() {
