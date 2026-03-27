@@ -4,7 +4,7 @@ import { createClient } from '@supabase/supabase-js';
 import { fetchAirdropClaims } from '@/lib/sui-rpc';
 
 const PAGES_PER_RUN  = 15;
-const TIME_BUDGET_MS = 49_000;
+const TIME_BUDGET_MS = 52_000;
 const BATCH_SIZE     = 100;
 
 function getDB() {
