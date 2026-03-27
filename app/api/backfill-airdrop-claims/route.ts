@@ -1,3 +1,4 @@
+// app/api/backfill-airdrop-claims/route.ts
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { fetchAirdropClaims } from '@/lib/sui-rpc';
@@ -9,7 +10,7 @@ const BATCH_SIZE     = 100;
 function getDB() {
   return createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    process.env.NEXT_PUBLIC_SUPABASE_SERVICE_ROLE_KEY!,
     { auth: { persistSession: false } }
   );
 }
@@ -32,19 +33,25 @@ async function processClaims(
   db: ReturnType<typeof getDB>,
   claimType: 'claim' | 'claim_sbt',
   checkpointKey: string,
-  startMs: number
-): Promise<{ count: number; done: boolean }> {
-  const { data: cp } = await db
-    .from('indexer_checkpoints')
-    .select('last_tx_digest, last_event_seq')
-    .eq('event_type', checkpointKey)
-    .single();
+  startMs: number,
+  gapfill: boolean
+): Promise<{ count: number; skipped: number; pages: number; done: boolean }> {
+  let cursor = null;
 
-  let cursor = cp?.last_tx_digest
-    ? { txDigest: cp.last_tx_digest, eventSeq: cp.last_event_seq || '0' }
-    : null;
+  if (!gapfill) {
+    const { data: cp } = await db
+      .from('indexer_checkpoints')
+      .select('last_tx_digest, last_event_seq')
+      .eq('event_type', checkpointKey)
+      .single();
+
+    cursor = cp?.last_tx_digest
+      ? { txDigest: cp.last_tx_digest, eventSeq: cp.last_event_seq || '0' }
+      : null;
+  }
 
   let totalInserted = 0;
+  let totalSkipped  = 0;
   let pages = 0;
 
   while (pages < PAGES_PER_RUN) {
@@ -62,16 +69,28 @@ async function processClaims(
         claimed_at:     c.claimed_at,
       }));
 
-      for (const b of chunk(rows, BATCH_SIZE)) {
-        await db.from('airdrop_claims')
-          .upsert(b, { onConflict: 'tx_digest', ignoreDuplicates: true });
+      // Skip already indexed digests
+      const { data: existing } = await db
+        .from('airdrop_claims')
+        .select('tx_digest')
+        .in('tx_digest', rows.map(r => r.tx_digest));
+
+      const existingSet = new Set(existing?.map(e => e.tx_digest) || []);
+      const newRows = rows.filter(r => !existingSet.has(r.tx_digest));
+      totalSkipped += rows.length - newRows.length;
+
+      if (newRows.length > 0) {
+        for (const b of chunk(newRows, BATCH_SIZE)) {
+          await db.from('airdrop_claims')
+            .upsert(b, { onConflict: 'tx_digest', ignoreDuplicates: true });
+        }
+        totalInserted += newRows.length;
       }
-      totalInserted += rows.length;
     }
 
     pages++;
 
-    if (page.nextCursor) {
+    if (!gapfill && page.nextCursor) {
       await db.from('indexer_checkpoints').upsert(
         {
           event_type:     checkpointKey,
@@ -85,13 +104,15 @@ async function processClaims(
     }
 
     if (!page.hasNextPage) {
-      await db.from('indexer_checkpoints')
-        .delete().eq('event_type', checkpointKey);
-      return { count: totalInserted, done: true };
+      if (!gapfill) {
+        await db.from('indexer_checkpoints')
+          .delete().eq('event_type', checkpointKey);
+      }
+      return { count: totalInserted, skipped: totalSkipped, pages, done: true };
     }
   }
 
-  return { count: totalInserted, done: false };
+  return { count: totalInserted, skipped: totalSkipped, pages, done: false };
 }
 
 export async function GET(req: NextRequest) {
@@ -102,9 +123,11 @@ export async function GET(req: NextRequest) {
   const startMs = Date.now();
   const db      = getDB();
 
+  const gapfill = req.nextUrl.searchParams.get('gapfill') === 'true';
+
   const [claimResult, claimSbtResult] = await Promise.all([
-    processClaims(db, 'claim',     'airdrop_claim_txs',     startMs),
-    processClaims(db, 'claim_sbt', 'airdrop_claim_sbt_txs', startMs),
+    processClaims(db, 'claim',     'airdrop_claim_txs',     startMs, gapfill),
+    processClaims(db, 'claim_sbt', 'airdrop_claim_sbt_txs', startMs, gapfill),
   ]);
 
   const allDone = claimResult.done && claimSbtResult.done;
@@ -114,5 +137,6 @@ export async function GET(req: NextRequest) {
     claims:        claimResult,
     claims_sbt:    claimSbtResult,
     elapsed_ms:    Date.now() - startMs,
+    gapfill_mode:  gapfill
   });
 }
