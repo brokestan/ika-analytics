@@ -10,7 +10,7 @@ const BATCH_SIZE     = 100;
 function getDB() {
   return createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_SERVICE_ROLE_KEY!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!,   // use consistent env var
     { auth: { persistSession: false } }
   );
 }
@@ -33,22 +33,17 @@ async function processClaims(
   db: ReturnType<typeof getDB>,
   claimType: 'claim' | 'claim_sbt',
   checkpointKey: string,
-  startMs: number,
-  gapfill: boolean
+  startMs: number
 ): Promise<{ count: number; skipped: number; pages: number; done: boolean }> {
-  let cursor = null;
+  const { data: cp } = await db
+    .from('indexer_checkpoints')
+    .select('last_tx_digest, last_event_seq')
+    .eq('event_type', checkpointKey)
+    .single();
 
-  if (!gapfill) {
-    const { data: cp } = await db
-      .from('indexer_checkpoints')
-      .select('last_tx_digest, last_event_seq')
-      .eq('event_type', checkpointKey)
-      .single();
-
-    cursor = cp?.last_tx_digest
-      ? { txDigest: cp.last_tx_digest, eventSeq: cp.last_event_seq || '0' }
-      : null;
-  }
+  let cursor = cp?.last_tx_digest
+    ? { txDigest: cp.last_tx_digest, eventSeq: cp.last_event_seq || '0' }
+    : null;
 
   let totalInserted = 0;
   let totalSkipped  = 0;
@@ -70,12 +65,17 @@ async function processClaims(
       }));
 
       // Skip already indexed digests
-      const { data: existing } = await db
-        .from('airdrop_claims')
-        .select('tx_digest')
-        .in('tx_digest', rows.map(r => r.tx_digest));
+      const digests = rows.map(r => r.tx_digest);
+      let existing: any[] = [];
+      if (digests.length > 0) {
+        const { data } = await db
+          .from('airdrop_claims')
+          .select('tx_digest')
+          .in('tx_digest', digests);
+        existing = data || [];
+      }
 
-      const existingSet = new Set(existing?.map(e => e.tx_digest) || []);
+      const existingSet = new Set(existing.map(e => e.tx_digest));
       const newRows = rows.filter(r => !existingSet.has(r.tx_digest));
       totalSkipped += rows.length - newRows.length;
 
@@ -90,7 +90,7 @@ async function processClaims(
 
     pages++;
 
-    if (!gapfill && page.nextCursor) {
+    if (page.nextCursor) {
       await db.from('indexer_checkpoints').upsert(
         {
           event_type:     checkpointKey,
@@ -104,10 +104,8 @@ async function processClaims(
     }
 
     if (!page.hasNextPage) {
-      if (!gapfill) {
-        await db.from('indexer_checkpoints')
-          .delete().eq('event_type', checkpointKey);
-      }
+      await db.from('indexer_checkpoints')
+        .delete().eq('event_type', checkpointKey);
       return { count: totalInserted, skipped: totalSkipped, pages, done: true };
     }
   }
@@ -123,11 +121,9 @@ export async function GET(req: NextRequest) {
   const startMs = Date.now();
   const db      = getDB();
 
-  const gapfill = req.nextUrl.searchParams.get('gapfill') === 'true';
-
   const [claimResult, claimSbtResult] = await Promise.all([
-    processClaims(db, 'claim',     'airdrop_claim_txs',     startMs, gapfill),
-    processClaims(db, 'claim_sbt', 'airdrop_claim_sbt_txs', startMs, gapfill),
+    processClaims(db, 'claim',     'airdrop_claim_txs',     startMs),
+    processClaims(db, 'claim_sbt', 'airdrop_claim_sbt_txs', startMs),
   ]);
 
   const allDone = claimResult.done && claimSbtResult.done;
@@ -137,6 +133,5 @@ export async function GET(req: NextRequest) {
     claims:        claimResult,
     claims_sbt:    claimSbtResult,
     elapsed_ms:    Date.now() - startMs,
-    gapfill_mode:  gapfill
   });
 }
