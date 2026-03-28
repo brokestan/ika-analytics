@@ -1006,7 +1006,7 @@ export async function fetchAirdropClaims(
       },
       cursor ? cursor.txDigest : null,
       100,
-      false,
+      true,
     ]);
 
     const data: AirdropClaimFlat[] = [];
