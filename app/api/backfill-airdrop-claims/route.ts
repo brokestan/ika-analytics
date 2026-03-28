@@ -1,16 +1,15 @@
-// app/api/backfill-airdrop-claims/route.ts
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { fetchAirdropClaims } from '@/lib/sui-rpc';
 
 const PAGES_PER_RUN  = 15;
-const TIME_BUDGET_MS = 52_000;
+const TIME_BUDGET_MS = 50_000;
 const BATCH_SIZE     = 100;
 
 function getDB() {
   return createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!,   // use consistent env var
+    process.env.SUPABASE_SERVICE_ROLE_KEY!,
     { auth: { persistSession: false } }
   );
 }
@@ -33,8 +32,9 @@ async function processClaims(
   db: ReturnType<typeof getDB>,
   claimType: 'claim' | 'claim_sbt',
   checkpointKey: string,
+  budgetMs: number,
   startMs: number
-): Promise<{ count: number; skipped: number; pages: number; done: boolean }> {
+): Promise<{ count: number; pages: number; done: boolean }> {
   const { data: cp } = await db
     .from('indexer_checkpoints')
     .select('last_tx_digest, last_event_seq')
@@ -46,11 +46,10 @@ async function processClaims(
     : null;
 
   let totalInserted = 0;
-  let totalSkipped  = 0;
   let pages = 0;
 
   while (pages < PAGES_PER_RUN) {
-    if (Date.now() - startMs > TIME_BUDGET_MS) break;
+    if (Date.now() - startMs > budgetMs) break;
 
     const page = await fetchAirdropClaims(claimType, cursor);
 
@@ -64,28 +63,11 @@ async function processClaims(
         claimed_at:     c.claimed_at,
       }));
 
-      // Skip already indexed digests
-      const digests = rows.map(r => r.tx_digest);
-      let existing: any[] = [];
-      if (digests.length > 0) {
-        const { data } = await db
-          .from('airdrop_claims')
-          .select('tx_digest')
-          .in('tx_digest', digests);
-        existing = data || [];
+      for (const b of chunk(rows, BATCH_SIZE)) {
+        await db.from('airdrop_claims')
+          .upsert(b, { onConflict: 'tx_digest', ignoreDuplicates: true });
       }
-
-      const existingSet = new Set(existing.map(e => e.tx_digest));
-      const newRows = rows.filter(r => !existingSet.has(r.tx_digest));
-      totalSkipped += rows.length - newRows.length;
-
-      if (newRows.length > 0) {
-        for (const b of chunk(newRows, BATCH_SIZE)) {
-          await db.from('airdrop_claims')
-            .upsert(b, { onConflict: 'tx_digest', ignoreDuplicates: true });
-        }
-        totalInserted += newRows.length;
-      }
+      totalInserted += rows.length;
     }
 
     pages++;
@@ -106,11 +88,11 @@ async function processClaims(
     if (!page.hasNextPage) {
       await db.from('indexer_checkpoints')
         .delete().eq('event_type', checkpointKey);
-      return { count: totalInserted, skipped: totalSkipped, pages, done: true };
+      return { count: totalInserted, pages, done: true };
     }
   }
 
-  return { count: totalInserted, skipped: totalSkipped, pages, done: false };
+  return { count: totalInserted, pages, done: false };
 }
 
 export async function GET(req: NextRequest) {
@@ -121,17 +103,21 @@ export async function GET(req: NextRequest) {
   const startMs = Date.now();
   const db      = getDB();
 
-  const [claimResult, claimSbtResult] = await Promise.all([
-    processClaims(db, 'claim',     'airdrop_claim_txs',     startMs),
-    processClaims(db, 'claim_sbt', 'airdrop_claim_sbt_txs', startMs),
-  ]);
+  // Run sequentially — each gets its own 25s slice of the budget
+  const claimResult = await processClaims(
+    db, 'claim', 'airdrop_claim_txs', 25_000, startMs
+  );
+
+  const claimSbtResult = await processClaims(
+    db, 'claim_sbt', 'airdrop_claim_sbt_txs', 50_000, startMs
+  );
 
   const allDone = claimResult.done && claimSbtResult.done;
 
   return NextResponse.json({
-    done:          allDone,
-    claims:        claimResult,
-    claims_sbt:    claimSbtResult,
-    elapsed_ms:    Date.now() - startMs,
+    done:       allDone,
+    claims:     claimResult,
+    claims_sbt: claimSbtResult,
+    elapsed_ms: Date.now() - startMs,
   });
 }
