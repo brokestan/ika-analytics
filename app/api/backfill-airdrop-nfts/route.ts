@@ -231,30 +231,25 @@ async function flushToDB(
 ): Promise<void> {
   const writes: Promise<unknown>[] = [];
 
-  // Supabase free tier doesn't support multi-row UPDATE — upsert on
-  // wallet_address conflict is the cleanest bulk path here
   if (nftUpdates.length > 0) {
-    // Chunk to avoid hitting Supabase's request body size limit
     const CHUNK = 50;
     for (let i = 0; i < nftUpdates.length; i += CHUNK) {
-      const chunk = nftUpdates.slice(i, i + CHUNK);
       writes.push(
         db.from('airdrop_allocations')
-          .upsert(chunk, { onConflict: 'wallet_address' })
+          .upsert(nftUpdates.slice(i, i + CHUNK), { onConflict: 'wallet_address' })
+          .then(r => { if (r.error) throw new Error(r.error.message); return r; })
       );
     }
   }
 
   if (newClaims.length > 0) {
-    // Single bulk upsert — tx_digest is the dedup key
     writes.push(
       db.from('airdrop_claims')
         .upsert(newClaims, { onConflict: 'tx_digest', ignoreDuplicates: true })
+        .then(r => { if (r.error) throw new Error(r.error.message); return r; })
     );
   }
 
-  // Fire all writes in parallel, never throw — a partial flush is
-  // safe because both tables use upsert (idempotent on re-run)
   await Promise.allSettled(writes);
 }
 
