@@ -1,10 +1,22 @@
+/**
+ * app/api/backfill-airdrop-claims/route.ts
+ *
+ * Run separately per type:
+ *   GET /api/backfill-airdrop-claims?type=claim&secret=X
+ *   GET /api/backfill-airdrop-claims?type=claim_sbt&secret=X
+ *
+ * When fully done, saves COMPLETED sentinel so it never re-scans.
+ * Run each until response shows done: true.
+ */
+
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { fetchAirdropClaims } from '@/lib/sui-rpc';
 
-const PAGES_PER_RUN  = 15;
+const PAGES_PER_RUN  = 20;
 const TIME_BUDGET_MS = 50_000;
 const BATCH_SIZE     = 100;
+const COMPLETED      = 'COMPLETED';
 
 function getDB() {
   return createClient(
@@ -32,14 +44,19 @@ async function processClaims(
   db: ReturnType<typeof getDB>,
   claimType: 'claim' | 'claim_sbt',
   checkpointKey: string,
-  budgetMs: number,
   startMs: number
-): Promise<{ count: number; pages: number; done: boolean }> {
+): Promise<{ count: number; pages: number; done: boolean; status: string }> {
+
+  // Check for completed sentinel — never re-scan if already finished
   const { data: cp } = await db
     .from('indexer_checkpoints')
     .select('last_tx_digest, last_event_seq')
     .eq('event_type', checkpointKey)
     .single();
+
+  if (cp?.last_tx_digest === COMPLETED) {
+    return { count: 0, pages: 0, done: true, status: 'already_complete' };
+  }
 
   let cursor = cp?.last_tx_digest
     ? { txDigest: cp.last_tx_digest, eventSeq: cp.last_event_seq || '0' }
@@ -49,7 +66,7 @@ async function processClaims(
   let pages = 0;
 
   while (pages < PAGES_PER_RUN) {
-    if (Date.now() - startMs > budgetMs) break;
+    if (Date.now() - startMs > TIME_BUDGET_MS) break;
 
     const page = await fetchAirdropClaims(claimType, cursor);
 
@@ -72,6 +89,7 @@ async function processClaims(
 
     pages++;
 
+    // Always save cursor progress after each page
     if (page.nextCursor) {
       await db.from('indexer_checkpoints').upsert(
         {
@@ -86,13 +104,21 @@ async function processClaims(
     }
 
     if (!page.hasNextPage) {
-      await db.from('indexer_checkpoints')
-        .delete().eq('event_type', checkpointKey);
-      return { count: totalInserted, pages, done: true };
+      // Save COMPLETED sentinel — prevents ever restarting from scratch
+      await db.from('indexer_checkpoints').upsert(
+        {
+          event_type:     checkpointKey,
+          last_tx_digest: COMPLETED,
+          last_event_seq: '0',
+          updated_at:     new Date().toISOString(),
+        },
+        { onConflict: 'event_type' }
+      );
+      return { count: totalInserted, pages, done: true, status: 'finished' };
     }
   }
 
-  return { count: totalInserted, pages, done: false };
+  return { count: totalInserted, pages, done: false, status: 'in_progress' };
 }
 
 export async function GET(req: NextRequest) {
@@ -100,24 +126,26 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const startMs = Date.now();
-  const db      = getDB();
+  const type = req.nextUrl.searchParams.get('type');
+  if (type !== 'claim' && type !== 'claim_sbt') {
+    return NextResponse.json(
+      { error: 'Missing ?type=claim or ?type=claim_sbt' },
+      { status: 400 }
+    );
+  }
 
-  // Run sequentially — each gets its own 25s slice of the budget
-  const claimResult = await processClaims(
-    db, 'claim', 'airdrop_claim_txs', 25_000, startMs
-  );
+  const startMs       = Date.now();
+  const db            = getDB();
+  const checkpointKey = type === 'claim' ? 'airdrop_claim_txs' : 'airdrop_claim_sbt_txs';
 
-  const claimSbtResult = await processClaims(
-    db, 'claim_sbt', 'airdrop_claim_sbt_txs', 50_000, startMs
-  );
-
-  const allDone = claimResult.done && claimSbtResult.done;
+  const result = await processClaims(db, type, checkpointKey, startMs);
 
   return NextResponse.json({
-    done:       allDone,
-    claims:     claimResult,
-    claims_sbt: claimSbtResult,
+    type,
+    done:       result.done,
+    status:     result.status,
+    count:      result.count,
+    pages:      result.pages,
     elapsed_ms: Date.now() - startMs,
   });
 }
