@@ -14,7 +14,7 @@ import { createClient } from '@supabase/supabase-js';
 const IKADROP_TYPE   = '0x5a6ae39fd84a871e94c88badc7689debae22119461ba1581f674bfe50acc1271::distribution::IKADrop';
 const RPC_URL        = process.env.SUI_RPC_URL || 'https://fullnode.mainnet.sui.io:443';
 const WALLETS_PER_RUN = 200;
-const TIME_BUDGET_MS  = 45_000;
+const TIME_BUDGET_MS  = 55_000;
 const COMPLETED       = 'COMPLETED';
 
 function getDB() {
