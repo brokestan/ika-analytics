@@ -15,7 +15,7 @@ import { createClient } from '@supabase/supabase-js';
 
 const IKADROP_TYPE    = '0x5a6ae39fd84a871e94c88badc7689debae22119461ba1581f674bfe50acc1271::distribution::IKADrop';
 const RPC_URL         = process.env.SUI_RPC_URL || 'https://fullnode.mainnet.sui.io:443';
-const WALLETS_PER_RUN = 200;
+const WALLETS_PER_RUN = 350;
 const MICRO_BATCH     = 10;    // concurrent RPC calls per micro-batch
 const TIME_BUDGET_MS  = 50_000; // 50s — leaves 10s headroom for Vercel's 60s limit
 const RPC_TIMEOUT_MS  = 8_000; // per-wallet RPC timeout
