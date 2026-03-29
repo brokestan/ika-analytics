@@ -229,7 +229,7 @@ async function flushToDB(
   nftUpdates: NFTUpdateRow[],
   newClaims:  ClaimRow[]
 ): Promise<void> {
-  const writes: Promise<unknown>[] = [];
+  const writes: PromiseLike<unknown>[] = [];
 
   if (nftUpdates.length > 0) {
     const CHUNK = 50;
