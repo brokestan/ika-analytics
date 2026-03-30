@@ -206,11 +206,7 @@ export async function GET(req: NextRequest) {
     .in('wallet_address', allAddresses)
     .not('tx_digest', 'like', '%:%');
 
-  const existingClaimsMap = new Map
-    string,
-    Array<{ claimed_amount: number; claim_minute: string }>
-  >();
-
+  const existingClaimsMap = new Map<string, Array<{ claimed_amount: number; claim_minute: string }>>();
   for (const row of existingRealClaims ?? []) {
     const minute = (row.claimed_at as string).substring(0, 16);
     if (!existingClaimsMap.has(row.wallet_address)) {
