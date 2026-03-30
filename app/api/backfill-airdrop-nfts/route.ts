@@ -1,8 +1,9 @@
 /**
  * app/api/backfill-airdrop-nfts/route.ts
  *
- * Fetches IKADrop NFT objects directly for wallets missing from airdrop_claims.
- * Bypasses the RPC pagination gap entirely.
+ * v2 — scans ALL 124k allocated wallets (claimed + unclaimed).
+ * Reads claim_history from each wallet's IKADrop NFT object.
+ * This is ground truth — immune to suix_queryTransactionBlocks pagination gaps.
  *
  * GET /api/backfill-airdrop-nfts?secret=X
  * Run until done: true
@@ -15,10 +16,11 @@ import { createClient } from '@supabase/supabase-js';
 
 const IKADROP_TYPE    = '0x5a6ae39fd84a871e94c88badc7689debae22119461ba1581f674bfe50acc1271::distribution::IKADrop';
 const RPC_URL         = process.env.SUI_RPC_URL || 'https://fullnode.mainnet.sui.io:443';
-const WALLETS_PER_RUN = 350;
-const MICRO_BATCH     = 10;    // concurrent RPC calls per micro-batch
-const TIME_BUDGET_MS  = 52_000; // 50s — leaves 10s headroom for Vercel's 60s limit
-const RPC_TIMEOUT_MS  = 8_000; // per-wallet RPC timeout
+const CHECKPOINT_KEY  = 'airdrop_nft_backfill_v2'; // fresh key — v1 covered 52k unclaimed
+const WALLETS_PER_RUN = 300;
+const MICRO_BATCH     = 10;
+const TIME_BUDGET_MS  = 50_000;
+const RPC_TIMEOUT_MS  = 8_000;
 const MAX_RETRIES     = 2;
 const COMPLETED       = 'COMPLETED';
 
@@ -90,8 +92,7 @@ function sleep(ms: number) {
 
 async function rpcCall<T>(method: string, params: unknown[]): Promise<T> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), RPC_TIMEOUT_MS);
-
+  const timer      = setTimeout(() => controller.abort(), RPC_TIMEOUT_MS);
   try {
     const res = await fetch(RPC_URL, {
       method:  'POST',
@@ -156,9 +157,7 @@ async function fetchIKADropNFT(walletAddress: string): Promise<NFTResult | null>
       return { objectId: obj.objectId, claimed, claimHistory };
     } catch (err) {
       const isAbort = err instanceof Error && err.name === 'AbortError';
-      // Don't retry on abort (timeout) — move on immediately
       if (isAbort || attempt === MAX_RETRIES) return null;
-      // Exponential backoff: 200ms then 400ms
       await sleep(200 * Math.pow(2, attempt));
     }
   }
@@ -182,17 +181,10 @@ async function processMicroBatch(wallets: WalletRow[]): Promise<MicroBatchResult
   let   nullCount = 0;
 
   for (const r of results) {
-    if (r.status === 'rejected') {
-      nullCount++;
-      continue;
-    }
+    if (r.status === 'rejected') { nullCount++; continue; }
 
     const { nft, wallet } = r.value;
-
-    if (!nft) {
-      nullCount++;
-      continue;
-    }
+    if (!nft) { nullCount++; continue; }
 
     if (nft.objectId) {
       nftUpdates.push({
@@ -201,15 +193,15 @@ async function processMicroBatch(wallets: WalletRow[]): Promise<MicroBatchResult
       });
     }
 
+    // Only write claim rows if the NFT actually has claim history
+    // claimed > 0 guards against NFT objects that exist but were never used
     if (nft.claimHistory.length > 0 && nft.claimed > 0) {
       for (const h of nft.claimHistory) {
         newClaims.push({
-          // Synthetic key: objectId + timestamp — same pattern as original
-          // Real tx_digest not available from object state, but this is stable
+          // Synthetic stable key — same wallet scanned twice = identical key = no-op upsert
           tx_digest:      `${nft.objectId}:${h.timestamp_ms}`,
           wallet_address: wallet,
-          // Divide by 1e9 — consistent with fetchAirdropClaims in sui-rpc.ts
-          // which also reads raw u64 and divides by 1e9 for claimed_amount
+          // Consistent with fetchAirdropClaims in sui-rpc.ts — both divide raw u64 by 1e9
           claimed_amount: Number(h.claimed) / 1e9,
           claim_type:     h.human_id_sbt_id ? 'claim_sbt' : 'claim',
           sbt_id:         h.human_id_sbt_id ?? null,
@@ -250,6 +242,8 @@ async function flushToDB(
     );
   }
 
+  // allSettled — never throws. Upserts are idempotent so partial flush
+  // is always safe to retry on the next trigger.
   await Promise.allSettled(writes);
 }
 
@@ -266,95 +260,100 @@ export async function GET(req: NextRequest) {
   // ── Load checkpoint ─────────────────────────────────────────────────────────
   const { data: cp } = await db
     .from('indexer_checkpoints')
-    .select('last_tx_digest')
-    .eq('event_type', 'airdrop_nft_backfill')
+    .select('last_tx_digest, last_event_seq')
+    .eq('event_type', CHECKPOINT_KEY)
     .single();
 
   if (cp?.last_tx_digest === COMPLETED) {
     return NextResponse.json({ done: true, status: 'already_complete' });
   }
 
-  // offset stored as a plain integer string in last_tx_digest
-  const offset = cp?.last_tx_digest ? parseInt(cp.last_tx_digest, 10) : 0;
+  const offset      = cp?.last_tx_digest ? parseInt(cp.last_tx_digest, 10) : 0;
+  const prevSkipped = cp?.last_event_seq  ? parseInt(cp.last_event_seq,  10) : 0;
 
-  // ── Fetch unclaimed wallets for this run ────────────────────────────────────
-  const { data: missing } = await db.rpc('get_unclaimed_airdrop_wallets', {
+  // ── Fetch all allocated wallets for this run ─────────────────────────────
+  // get_all_airdrop_wallets returns claimed + unclaimed.
+  // Unclaimed wallets return null from RPC (no NFT found) — fast and harmless.
+  // Claimed wallets return their NFT's claim_history — ground truth for the gap.
+  const { data: missing } = await db.rpc('get_all_airdrop_wallets', {
     p_offset: offset,
     p_limit:  WALLETS_PER_RUN,
   });
 
   if (!missing || missing.length === 0) {
-    // Nothing left — mark complete
     await db.from('indexer_checkpoints').upsert(
       {
-        event_type:     'airdrop_nft_backfill',
+        event_type:     CHECKPOINT_KEY,
         last_tx_digest: COMPLETED,
-        last_event_seq: '0',
+        last_event_seq: String(prevSkipped),
         updated_at:     new Date().toISOString(),
       },
       { onConflict: 'event_type' }
     );
-    return NextResponse.json({ done: true, status: 'finished', offset });
+    return NextResponse.json({
+      done:          true,
+      status:        'finished',
+      final_offset:  offset,
+      total_skipped: prevSkipped,
+    });
   }
 
-  // ── Process in micro-batches ────────────────────────────────────────────────
-  const wallets      = missing as WalletRow[];
-  let   processed    = 0;
-  let   totalClaims  = 0;
-  let   totalNFTs    = 0;
-  let   batchesRun   = 0;
+  // ── Process in micro-batches ─────────────────────────────────────────────
+  const wallets       = missing as WalletRow[];
+  let   processed     = 0;
+  let   totalClaims   = 0;
+  let   totalNFTs     = 0;
+  let   totalNulls    = 0;
+  let   batchesRun    = 0;
   let   currentOffset = offset;
 
   for (let i = 0; i < wallets.length; i += MICRO_BATCH) {
-    // Time budget check at the TOP of each iteration — never start a batch
-    // we can't finish. 4s headroom per batch (10 wallets × ~8s max timeout = 80s
-    // worst case, but in practice ~1-2s per batch at 10× concurrency).
     if (Date.now() - startMs > TIME_BUDGET_MS) {
-      console.log(`[backfill] Time budget reached after ${batchesRun} batches`);
+      console.log(`[backfill-v2] Time budget hit — resuming at offset ${currentOffset}`);
       break;
     }
 
     const batch = wallets.slice(i, i + MICRO_BATCH);
-
     const { nftUpdates, newClaims, nullCount } = await processMicroBatch(batch);
 
     processed   += batch.length;
     totalNFTs   += nftUpdates.length;
     totalClaims += newClaims.length;
+    totalNulls  += nullCount;
     batchesRun++;
 
-    // Bulk flush collected results to DB
     await flushToDB(db, nftUpdates, newClaims);
 
-    // ── Mid-run checkpoint ───────────────────────────────────────────────────
-    // Saved after every micro-batch so a Vercel kill loses at most 10 wallets,
-    // not the whole run. last_event_seq re-purposed to track running null count.
+    // Mid-run checkpoint — survives Vercel kills, at most 10 wallets re-processed
     currentOffset = offset + processed;
     await db.from('indexer_checkpoints').upsert(
       {
-        event_type:     'airdrop_nft_backfill',
+        event_type:     CHECKPOINT_KEY,
         last_tx_digest: String(currentOffset),
-        last_event_seq: String(nullCount),
+        last_event_seq: String(prevSkipped + totalNulls),
         updated_at:     new Date().toISOString(),
       },
       { onConflict: 'event_type' }
     );
 
-    // Small inter-batch pause — be kind to the RPC node.
-    // Much shorter than original 150ms since we're already parallelised.
     const remainingMs = TIME_BUDGET_MS - (Date.now() - startMs);
     if (remainingMs > 500) await sleep(100);
   }
 
+  const notReachedThisRun = wallets.length - processed;
+
   return NextResponse.json({
-    done:        false,
-    status:      'in_progress',
-    offset_was:  offset,
-    offset_now:  currentOffset,
-    processed,
-    batches_run: batchesRun,
-    new_claims:  totalClaims,
-    nft_updates: totalNFTs,
-    elapsed_ms:  Date.now() - startMs,
+    done:                 false,
+    status:               'in_progress',
+    offset_was:           offset,
+    offset_now:           currentOffset,
+    processed_this_run:   processed,
+    not_reached_this_run: notReachedThisRun,
+    batches_run:          batchesRun,
+    new_claims:           totalClaims,
+    nft_updates:          totalNFTs,
+    nulls_this_run:       totalNulls,
+    cumulative_skipped:   prevSkipped + totalNulls,
+    elapsed_ms:           Date.now() - startMs,
   });
 }
