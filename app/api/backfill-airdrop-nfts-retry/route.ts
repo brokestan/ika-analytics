@@ -20,7 +20,7 @@ const WALLETS_PER_RUN = 250;
 const MICRO_BATCH     = 10;
 const TIME_BUDGET_MS  = 50_000;
 const RPC_TIMEOUT_MS  = 30_000;
-const MAX_RETRIES     = 1;
+const MAX_RETRIES     = 3;
 const COMPLETED       = 'COMPLETED';
 
 interface ClaimEntry {
