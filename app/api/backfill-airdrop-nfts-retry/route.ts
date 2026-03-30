@@ -430,17 +430,3 @@ export async function GET(req: NextRequest) {
     elapsed_ms:      Date.now() - startMs,
   });
 }
-```
-
-**How the passes work automatically:**
-```
-Triggers 1-N:   nulls_remaining drains toward 0
-                failed wallets become 'NONE'
-
-Triggers N+1:   nulls_remaining = 0, switches to none_pass
-                NONEs get 25s timeout + 3 retries again
-                still failing → stay as NONE for next cycle
-
-Triggers N+M:   if NONEs keep failing after multiple passes
-                they are genuinely unreachable wallets
-                done:true when both NULL and NONE counts = 0
