@@ -17,8 +17,8 @@ import { createClient } from '@supabase/supabase-js';
 const IKADROP_TYPE    = '0x5a6ae39fd84a871e94c88badc7689debae22119461ba1581f674bfe50acc1271::distribution::IKADrop';
 const RPC_URL         = process.env.SUI_RPC_URL || 'https://fullnode.mainnet.sui.io:443';
 const CHECKPOINT_KEY  = 'airdrop_nft_backfill_v2'; // fresh key — v1 covered 52k unclaimed
-const WALLETS_PER_RUN = 300;
-const MICRO_BATCH     = 10;
+const WALLETS_PER_RUN = 400;
+const MICRO_BATCH     = 15;
 const TIME_BUDGET_MS  = 50_000;
 const RPC_TIMEOUT_MS  = 8_000;
 const MAX_RETRIES     = 2;
