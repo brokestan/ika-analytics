@@ -19,8 +19,8 @@ const CHECKPOINT_KEY  = 'airdrop_nft_backfill_retry';
 const WALLETS_PER_RUN = 100;
 const MICRO_BATCH     = 5;
 const TIME_BUDGET_MS  = 50_000;
-const RPC_TIMEOUT_MS  = 25_000;
-const MAX_RETRIES     = 3;
+const RPC_TIMEOUT_MS  = 30_000;
+const MAX_RETRIES     = 2;
 const COMPLETED       = 'COMPLETED';
 
 interface ClaimEntry {
@@ -253,10 +253,8 @@ export async function GET(req: NextRequest) {
     .not('tx_digest', 'like', '%:%');
 
   // Map: wallet → array of { claimed_amount, claim_minute }
-  const existingClaimsMap = new Map
-    string,
-    Array<{ claimed_amount: number; claim_minute: string }>
-  >();
+  const existingClaimsMap = new Map<string, Array<{ claimed_amount: number; claim_minute: string }>>();
+
   for (const row of existingRealClaims ?? []) {
     const minute = (row.claimed_at as string).substring(0, 16);
     if (!existingClaimsMap.has(row.wallet_address)) {
