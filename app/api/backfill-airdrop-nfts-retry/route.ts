@@ -1,13 +1,13 @@
 /**
  * app/api/backfill-airdrop-nfts-retry/route.ts
  *
- * Retries all wallets where nft_object_id IS NULL (timed out in main run).
- * Uses 25s timeout and low concurrency for heavy wallets.
- * Wallets that fail again get marked 'NONE' and are retried in subsequent
- * passes with even more generous timing until the table is exhausted.
+ * Targeted retry — only scans 3,460 wallets where
+ * SUM(claimed) < allocation_amount.
+ * These are the wallets where we're missing claim transactions.
+ * Uses per-claim duplicate check so partial claimers are handled safely.
  *
  * GET /api/backfill-airdrop-nfts-retry?secret=X
- * Run until done: true
+ * Run until done: true (~35 triggers)
  */
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -15,12 +15,12 @@ import { createClient } from '@supabase/supabase-js';
 
 const IKADROP_TYPE    = '0x5a6ae39fd84a871e94c88badc7689debae22119461ba1581f674bfe50acc1271::distribution::IKADrop';
 const RPC_URL         = process.env.SUI_RPC_URL || 'https://fullnode.mainnet.sui.io:443';
-const CHECKPOINT_KEY  = 'airdrop_nft_backfill_retry';
+const CHECKPOINT_KEY  = 'airdrop_nft_backfill_retry_v2';
 const WALLETS_PER_RUN = 100;
 const MICRO_BATCH     = 5;
 const TIME_BUDGET_MS  = 50_000;
 const RPC_TIMEOUT_MS  = 30_000;
-const MAX_RETRIES     = 2;
+const MAX_RETRIES     = 1;
 const COMPLETED       = 'COMPLETED';
 
 interface ClaimEntry {
@@ -154,25 +154,30 @@ export async function GET(req: NextRequest) {
   const startMs = Date.now();
   const db      = getDB();
 
-  // ── Check what pass we're on ───────────────────────────────────────────────
-  // Pass 1: fetch wallets where nft_object_id IS NULL  (main run timed out)
-  // Pass 2: fetch wallets where nft_object_id = 'NONE' (retry pass timed out)
-  // Each pass runs to completion before moving to the next.
-  // After both passes if NULLs/NONEs remain we keep cycling until exhausted.
+  // ── Load checkpoint ──────────────────────────────────────────────────────
+  const { data: cp } = await db
+    .from('indexer_checkpoints')
+    .select('last_tx_digest, last_event_seq')
+    .eq('event_type', CHECKPOINT_KEY)
+    .single();
 
-  const { count: nullCount } = await db
-    .from('airdrop_allocations')
-    .select('*', { count: 'exact', head: true })
-    .is('nft_object_id', null);
+  if (cp?.last_tx_digest === COMPLETED) {
+    return NextResponse.json({ done: true, status: 'already_complete' });
+  }
 
-  const { count: noneCount } = await db
-    .from('airdrop_allocations')
-    .select('*', { count: 'exact', head: true })
-    .eq('nft_object_id', 'NONE');
+  const offset = cp?.last_tx_digest
+    ? parseInt(cp.last_tx_digest, 10)
+    : 0;
 
-  const totalPending = (nullCount ?? 0) + (noneCount ?? 0);
+  // ── Fetch underclaimed wallets for this run ───────────────────────────────
+  // Only wallets where SUM(real claims) < allocation_amount
+  // This is the focused 3,460 wallet set — not all 124k
+  const { data: pending } = await db.rpc('get_underclaimed_wallets', {
+    p_offset: offset,
+    p_limit:  WALLETS_PER_RUN,
+  });
 
-  if (totalPending === 0) {
+  if (!pending || pending.length === 0) {
     await db.from('indexer_checkpoints').upsert(
       {
         event_type:     CHECKPOINT_KEY,
@@ -183,67 +188,16 @@ export async function GET(req: NextRequest) {
       { onConflict: 'event_type' }
     );
     return NextResponse.json({
-      done:    true,
-      status:  'all_resolved',
-      message: 'No NULL or NONE nft_object_id rows remain',
-    });
-  }
-
-  // ── Determine current pass ────────────────────────────────────────────────
-  // Always drain NULLs first, then NONEs
-  const currentPass  = (nullCount ?? 0) > 0 ? 'null_pass' : 'none_pass';
-  const isNullPass   = currentPass === 'null_pass';
-
-  // ── Load checkpoint offset for current pass ───────────────────────────────
-  const { data: cp } = await db
-    .from('indexer_checkpoints')
-    .select('last_tx_digest, last_event_seq')
-    .eq('event_type', `${CHECKPOINT_KEY}_${currentPass}`)
-    .single();
-
-  const offset = cp?.last_tx_digest && cp.last_tx_digest !== COMPLETED
-    ? parseInt(cp.last_tx_digest, 10)
-    : 0;
-
-  // ── Fetch pending wallets for this run ────────────────────────────────────
-  const query = isNullPass
-    ? db.from('airdrop_allocations')
-        .select('wallet_address')
-        .is('nft_object_id', null)
-        .order('wallet_address')
-        .range(offset, offset + WALLETS_PER_RUN - 1)
-    : db.from('airdrop_allocations')
-        .select('wallet_address')
-        .eq('nft_object_id', 'NONE')
-        .order('wallet_address')
-        .range(offset, offset + WALLETS_PER_RUN - 1);
-
-  const { data: pending } = await query;
-
-  if (!pending || pending.length === 0) {
-    // This pass is done — reset its checkpoint
-    await db.from('indexer_checkpoints').upsert(
-      {
-        event_type:     `${CHECKPOINT_KEY}_${currentPass}`,
-        last_tx_digest: COMPLETED,
-        last_event_seq: '0',
-        updated_at:     new Date().toISOString(),
-      },
-      { onConflict: 'event_type' }
-    );
-    return NextResponse.json({
-      done:           false,
-      status:         `${currentPass}_complete`,
-      nulls_left:     nullCount ?? 0,
-      nones_left:     noneCount ?? 0,
-      total_pending:  totalPending,
-      message:        isNullPass
-        ? 'NULL pass done — next trigger starts NONE pass'
-        : 'NONE pass done — next trigger checks if more remain',
+      done:         true,
+      status:       'finished',
+      final_offset: offset,
+      message:      'All underclaimed wallets scanned',
     });
   }
 
   // ── Pre-load existing real claims for duplicate prevention ────────────────
+  // Per-claim check so partial claimers are handled correctly —
+  // only missing individual claim entries get written, not whole wallets
   const allAddresses = (pending as WalletRow[]).map(w => w.wallet_address);
 
   const { data: existingRealClaims } = await db
@@ -252,8 +206,10 @@ export async function GET(req: NextRequest) {
     .in('wallet_address', allAddresses)
     .not('tx_digest', 'like', '%:%');
 
-  // Map: wallet → array of { claimed_amount, claim_minute }
-  const existingClaimsMap = new Map<string, Array<{ claimed_amount: number; claim_minute: string }>>();
+  const existingClaimsMap = new Map
+    string,
+    Array<{ claimed_amount: number; claim_minute: string }>
+  >();
 
   for (const row of existingRealClaims ?? []) {
     const minute = (row.claimed_at as string).substring(0, 16);
@@ -266,19 +222,19 @@ export async function GET(req: NextRequest) {
     });
   }
 
-  // ── Process in micro-batches ──────────────────────────────────────────────
-  const wallets        = pending as WalletRow[];
-  let   processed      = 0;
-  let   totalClaims    = 0;
-  let   totalNFTs      = 0;
-  let   resolved       = 0;
-  let   failedAgain    = 0;
-  let   batchesRun     = 0;
-  let   currentOffset  = offset;
+  // ── Process in micro-batches ─────────────────────────────────────────────
+  const wallets       = pending as WalletRow[];
+  let   processed     = 0;
+  let   totalClaims   = 0;
+  let   totalNFTs     = 0;
+  let   resolved      = 0;
+  let   stillNull     = 0;
+  let   batchesRun    = 0;
+  let   currentOffset = offset;
 
   for (let i = 0; i < wallets.length; i += MICRO_BATCH) {
     if (Date.now() - startMs > TIME_BUDGET_MS) {
-      console.log(`[retry:${currentPass}] Time budget hit after ${batchesRun} batches`);
+      console.log(`[retry-v2] Time budget hit after ${batchesRun} batches`);
       break;
     }
 
@@ -293,28 +249,18 @@ export async function GET(req: NextRequest) {
       )
     );
 
-    const nftUpdates:      Array<{ wallet_address: string; nft_object_id: string }> = [];
-    const newClaims:       ClaimRow[]  = [];
-    const resolvedWallets: string[]    = [];
-    const failedWallets:   string[]    = [];
+    const nftUpdates: Array<{ wallet_address: string; nft_object_id: string }> = [];
+    const newClaims:  ClaimRow[] = [];
 
     for (const r of results) {
-      if (r.status === 'rejected') { failedAgain++; continue; }
+      if (r.status === 'rejected') { stillNull++; continue; }
 
       const { nft, wallet } = r.value;
+      if (!nft) { stillNull++; continue; }
 
-      if (!nft) {
-        // Still failing after 25s + 3 retries
-        // Mark as NONE so it gets a dedicated pass after all NULLs are done
-        failedAgain++;
-        failedWallets.push(wallet);
-        continue;
-      }
-
-      // Successfully resolved
       resolved++;
-      resolvedWallets.push(wallet);
 
+      // Track object ID
       nftUpdates.push({
         wallet_address: wallet,
         nft_object_id:  nft.objectId,
@@ -328,9 +274,10 @@ export async function GET(req: NextRequest) {
           const claimMinute = claimedAt.substring(0, 16);
           const claimedAmt  = Number(h.claimed) / 1e9;
 
-          // Per-claim duplicate check — safe for partial claimers
+          // Only write if this specific claim doesn't already exist
           const isDuplicate = existingForWallet.some(
-            e => e.claimed_amount === claimedAmt && e.claim_minute === claimMinute
+            e => e.claimed_amount === claimedAmt &&
+                 e.claim_minute   === claimMinute
           );
 
           if (!isDuplicate) {
@@ -354,7 +301,6 @@ export async function GET(req: NextRequest) {
 
     const writes: PromiseLike<unknown>[] = [];
 
-    // Write resolved NFT object IDs
     if (nftUpdates.length > 0) {
       for (const ch of chunk(nftUpdates, 50)) {
         writes.push(
@@ -365,7 +311,6 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    // Write genuine new claims
     if (newClaims.length > 0) {
       writes.push(
         db.from('airdrop_claims')
@@ -374,23 +319,13 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    // Mark still-failing wallets as NONE so they get another pass
-    if (failedWallets.length > 0) {
-      writes.push(
-        db.from('airdrop_allocations')
-          .update({ nft_object_id: 'NONE' })
-          .in('wallet_address', failedWallets)
-          .then(r => { if (r.error) throw new Error(r.error.message); return r; })
-      );
-    }
-
     await Promise.allSettled(writes);
 
-    // Mid-run checkpoint for this pass
+    // Mid-run checkpoint
     currentOffset = offset + processed;
     await db.from('indexer_checkpoints').upsert(
       {
-        event_type:     `${CHECKPOINT_KEY}_${currentPass}`,
+        event_type:     CHECKPOINT_KEY,
         last_tx_digest: String(currentOffset),
         last_event_seq: '0',
         updated_at:     new Date().toISOString(),
@@ -402,31 +337,22 @@ export async function GET(req: NextRequest) {
     if (remainingMs > 1000) await sleep(200);
   }
 
-  // Recount after this run
-  const { count: nullsAfter } = await db
-    .from('airdrop_allocations')
-    .select('*', { count: 'exact', head: true })
-    .is('nft_object_id', null);
-
-  const { count: nonesAfter } = await db
-    .from('airdrop_allocations')
-    .select('*', { count: 'exact', head: true })
-    .eq('nft_object_id', 'NONE');
+  // Check how many underclaimed wallets remain after this run
+  const { data: remaining } = await db.rpc('get_underclaimed_wallets', {
+    p_offset: 0,
+    p_limit:  1,
+  });
 
   return NextResponse.json({
     done:            false,
     status:          'retry_in_progress',
-    current_pass:    currentPass,
     offset_was:      offset,
     offset_now:      currentOffset,
     processed:       processed,
     resolved:        resolved,
-    failed_again:    failedAgain,
+    still_null:      stillNull,
     new_claims:      totalClaims,
     nft_updates:     totalNFTs,
-    nulls_remaining: nullsAfter  ?? 0,
-    nones_remaining: nonesAfter  ?? 0,
-    total_pending:   (nullsAfter ?? 0) + (nonesAfter ?? 0),
     elapsed_ms:      Date.now() - startMs,
   });
 }
