@@ -164,7 +164,13 @@ export default async function AirdropPage() {
     db.rpc('get_airdrop_full_stats'),
   ]);
 
-  const s = statsRes.data as AirdropStats | null;
+  const s = (
+  statsRes.data && typeof statsRes.data === 'object' && !Array.isArray(statsRes.data)
+    ? statsRes.data
+    : Array.isArray(statsRes.data)
+      ? statsRes.data[0]
+      : null
+) as AirdropStats | null;
 
   const sbtClaimPct = s
     ? (s.sbt_unique_claimers / Math.max(s.sbt_allocated, 1)) * 100
