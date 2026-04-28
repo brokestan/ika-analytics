@@ -331,7 +331,7 @@ export default async function AirdropPage() {
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-x-6 gap-y-1 mt-1">
               <span>Opens: <span className="text-white font-mono">Jul 29, 2025</span></span>
               <span>Penalty ends: <span className="text-white font-mono">Oct 28, 2025</span></span>
-              <span>Closes: <span className="text-white font-mono">Apr 28, 2026</span></span>
+              <span>Closes: <span className="text-white font-mono">Jul 29, 2026</span></span>
             </div>
           </div>
         </div>
