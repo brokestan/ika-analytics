@@ -19,6 +19,8 @@ import type {
   UnlockEventFlat,
   ISUILockEventFlat,
   ISUIUnlockEventFlat,
+  RiddleSubmissionFlat,
+  AirdropClaimFlat,
 } from './sui-rpc';
 import type { LockDuration } from './types';
 
@@ -34,6 +36,22 @@ const EVENT_IKA_UNLOCK = `${PKG}::event_wrapper::Event<${PKG}::tasks::StakedIkaU
 // Same package as IKA — confirmed via the playground, not a separate deployment.
 const EVENT_ISUI_LOCK   = `${PKG}::event_wrapper::Event<${PKG}::tasks::ISuiLocked>`;
 const EVENT_ISUI_UNLOCK = `${PKG}::event_wrapper::Event<${PKG}::tasks::ISuiUnlocked>`;
+
+// Riddle submissions run against the newer V4 contract — a distinct package
+// from the main tasks PKG above (confirmed: this is what your V3 stream,
+// which we're deliberately not migrating since that contract is paused,
+// used to point at a different package entirely).
+const V4_PKG =
+  process.env.IKA_V4_PACKAGE_ID ||
+  '0x765307507478ca630ddc0c44ab3bb9e83c3aa98aea2777a4f0aea0ade4a853f8';
+const RIDDLE_FUNCTION = `${V4_PKG}::tasks::submit_riddle_answer`;
+
+// Airdrop package — hardcoded in the original file too, no env override there.
+const AIRDROP_PKG = '0x5a6ae39fd84a871e94c88badc7689debae22119461ba1581f674bfe50acc1271';
+
+// Confirmed via the playground (the coinType.repr on the real balance change
+// for a known claim, cross-checked against the stored claimed_amount).
+const IKA_COIN_TYPE = '0x7262fb2f7a3a14c888c438a3cd9b912469a58cf60f367352c46584262e8299aa::ika::IKA';
 
 // Free overlap-safety margin below the recorded checkpoint. Overlap costs
 // nothing: `locks.tx_digest` is unique-constrained, and unlock updates are
@@ -259,10 +277,9 @@ export async function fetchDurationsForBatchGraphQL(
 
   // One aliased root field per digest, batched into a single request —
   // same intent as sui_multiGetTransactionBlocks doing them all at once.
-  // NOTE: this exact multi-alias batching shape hasn't been tried against
-  // the real endpoint yet — worth a small test (2-3 digests) before trusting
-  // it at full batch size. If the provider rejects a large batch, fall back
-  // to chunking into smaller groups (e.g. 10 at a time) or sequential calls.
+  // Confirmed working at small batch size (2-3 digests) via the playground.
+  // If a large batch ever gets rejected by the provider, chunk into smaller
+  // groups (e.g. 10 at a time) rather than one giant request.
   const query = `
     query {
       ${txDigests.map((d, i) => `
@@ -423,4 +440,177 @@ export async function fetchIkaChanNftObjectsGraphQL(
   }
 
   return map;
+}
+
+// ─── Generic paginated transaction-filter fetch ────────────────────────────
+// Shared by riddle submissions and both airdrop claim types — all three
+// filter on a specific Move function rather than an event type, confirmed
+// to support the same afterCheckpoint floor mechanism as events do.
+
+interface RawTxNode {
+  digest: string;
+  sender: { address: string } | null;
+  effects: {
+    status: string; // "SUCCESS" / "FAILURE" — uppercase, NOT JSON-RPC's lowercase "success"
+    timestamp: string;
+    balanceChanges: { nodes: Array<{ amount: string; coinType: { repr: string } }> } | null;
+    objectChanges: {
+      nodes: Array<{
+        address: string;
+        outputState: { asMoveObject?: { contents?: { type?: { repr: string } } } } | null;
+      }>;
+    } | null;
+  };
+  kind: {
+    __typename: string;
+    inputs?: { nodes: Array<{ __typename: string; json?: string }> };
+  };
+}
+interface RawTxsResponse {
+  transactions: {
+    pageInfo: { hasNextPage: boolean; endCursor: string | null };
+    nodes: RawTxNode[];
+  };
+}
+
+async function fetchTxStreamPage(
+  functionFilter: string,
+  cursor: EventCursor | null,
+  bootstrapCheckpoint: number,
+): Promise<{ nodes: RawTxNode[]; nextCursor: EventCursor | null; hasNextPage: boolean }> {
+  const floor = Math.max(bootstrapCheckpoint - CHECKPOINT_SAFETY_BUFFER, 0);
+  const afterClause = cursor?.eventSeq ? `, after: "${cursor.eventSeq}"` : '';
+
+  const query = `
+    query {
+      transactions(filter: { function: "${functionFilter}", afterCheckpoint: ${floor} }, first: 50${afterClause}) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          digest
+          sender { address }
+          effects {
+            status
+            timestamp
+            balanceChanges { nodes { amount coinType { repr } } }
+            objectChanges { nodes { address outputState { asMoveObject { contents { type { repr } } } } } }
+          }
+          kind {
+            __typename
+            ... on ProgrammableTransaction {
+              inputs { nodes { __typename ... on MoveValue { json } } }
+            }
+          }
+        }
+      }
+    }
+  `;
+
+  const data = await graphqlCall<RawTxsResponse>(query);
+  const nodes = data.transactions.nodes;
+  const nextCursor: EventCursor | null = data.transactions.pageInfo.hasNextPage
+    ? {
+        txDigest: nodes.length ? nodes[nodes.length - 1].digest : (cursor?.txDigest ?? ''),
+        eventSeq: data.transactions.pageInfo.endCursor ?? '',
+      }
+    : null;
+
+  return { nodes, nextCursor, hasNextPage: data.transactions.pageInfo.hasNextPage };
+}
+
+// ─── Riddle Submissions ─────────────────────────────────────────────────────
+// CRITICAL: a wrong riddle answer aborts the on-chain call — it never
+// produces a row at all, in either the JSON-RPC or GraphQL version. The
+// effects.status === 'SUCCESS' check below (uppercase!) IS the correctness
+// gate for the entire stream. Get this comparison wrong and either every
+// genuinely correct submission silently vanishes, or (if inverted) wrong
+// answers start getting counted. This is the single most important line
+// in this function.
+
+export async function fetchRiddleSubmissionsGraphQL(
+  cursor: EventCursor | null,
+  bootstrapCheckpoint: number,
+): Promise<EventPage<RiddleSubmissionFlat>> {
+  try {
+    const { nodes, nextCursor, hasNextPage } =
+      await fetchTxStreamPage(RIDDLE_FUNCTION, cursor, bootstrapCheckpoint);
+
+    const data: RiddleSubmissionFlat[] = [];
+    for (const tx of nodes) {
+      if (tx.effects.status !== 'SUCCESS') continue;
+
+      // Confirmed via the playground: the riddle number sits at inputs[1]
+      // as a MoveValue. Bounds-checked to 1-3, same as the JSON-RPC
+      // version, so anything unexpected gets skipped rather than stored.
+      const inputNodes = tx.kind.inputs?.nodes ?? [];
+      const raw = inputNodes[1]?.json;
+      const riddleNumber = raw !== undefined ? parseInt(raw, 10) : NaN;
+      if (isNaN(riddleNumber) || riddleNumber < 1 || riddleNumber > 3) continue;
+
+      data.push({
+        txDigest:       tx.digest,
+        timestampMs:    tsFromIso(tx.effects.timestamp),
+        wallet_address: tx.sender?.address ?? '',
+        riddle_number:  riddleNumber,
+      });
+    }
+
+    return { data, nextCursor, hasNextPage };
+  } catch (err) {
+    console.error('[fetchRiddleSubmissionsGraphQL]', err);
+    return { data: [], nextCursor: cursor, hasNextPage: false };
+  }
+}
+
+// ─── Airdrop Claims (claim + claim_sbt) ─────────────────────────────────────
+// Same SUCCESS/success gotcha as riddle submissions applies here too.
+//
+// claimed_amount comes from balanceChanges filtered to the IKA coin type,
+// not from reading a fixed input position like the JSON-RPC version does.
+// Confirmed via the playground to match the stored value exactly, and it's
+// actually more robust than the original: a balance change is always
+// per-transaction by definition, so there's no risk of accidentally reading
+// a cumulative total (which some of the contract's own object fields are).
+
+export async function fetchAirdropClaimsGraphQL(
+  claimType: 'claim' | 'claim_sbt',
+  cursor: EventCursor | null,
+  bootstrapCheckpoint: number,
+): Promise<EventPage<AirdropClaimFlat>> {
+  const functionFilter = `${AIRDROP_PKG}::distribution::${claimType}`;
+  try {
+    const { nodes, nextCursor, hasNextPage } =
+      await fetchTxStreamPage(functionFilter, cursor, bootstrapCheckpoint);
+
+    const data: AirdropClaimFlat[] = [];
+    for (const tx of nodes) {
+      if (tx.effects.status !== 'SUCCESS') continue;
+
+      const ikaChange = (tx.effects.balanceChanges?.nodes ?? [])
+        .find(b => b.coinType.repr === IKA_COIN_TYPE);
+      const claimedAmount = ikaChange ? Number(ikaChange.amount) / 1e9 : 0;
+
+      let sbtId: string | null = null;
+      if (claimType === 'claim_sbt') {
+        const sbtChange = (tx.effects.objectChanges?.nodes ?? [])
+          .find(c => c.outputState?.asMoveObject?.contents?.type?.repr.includes('::sbt::SoulBoundToken'));
+        sbtId = sbtChange?.address ?? null;
+      }
+
+      data.push({
+        tx_digest:      tx.digest,
+        wallet_address: tx.sender?.address ?? '',
+        claimed_amount: claimedAmount,
+        claim_type:     claimType,
+        sbt_id:         sbtId,
+        // effects.timestamp is already ISO-8601 from GraphQL, unlike
+        // JSON-RPC's raw timestampMs — no conversion needed here.
+        claimed_at: tx.effects.timestamp,
+      });
+    }
+
+    return { data, nextCursor, hasNextPage };
+  } catch (err) {
+    console.error(`[fetchAirdropClaimsGraphQL:${claimType}]`, err);
+    return { data: [], nextCursor: cursor, hasNextPage: false };
+  }
 }
