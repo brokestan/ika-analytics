@@ -18,7 +18,11 @@ import {
   fetchISUILockEventsGraphQL,
   fetchISUIUnlockEventsGraphQL,
   fetchDurationsForBatchGraphQL,
+  fetchMfSquidMaidenMintEventsGraphQL,
+  fetchTransactionEventsInBatchGraphQL,
+  fetchIkaChanNftObjectsGraphQL,
 } from '@/lib/sui-graphql';
+import { calcNftDrizzlets } from '@/lib/sui-rpc';
 
 function getDB() {
   return createClient(
@@ -36,7 +40,7 @@ function isAuthorized(req: NextRequest): boolean {
   return auth === `Bearer ${secret}` || qs === secret;
 }
 
-const KNOWN_STREAMS = ['lock_events', 'unlock_events', 'isui_lock_events', 'isui_unlock_events'] as const;
+const KNOWN_STREAMS = ['lock_events', 'unlock_events', 'isui_lock_events', 'isui_unlock_events', 'mfsm_events'] as const;
 type KnownStream = typeof KNOWN_STREAMS[number];
 
 async function runStream(db: ReturnType<typeof getDB>, stream: KnownStream) {
@@ -51,6 +55,49 @@ async function runStream(db: ReturnType<typeof getDB>, stream: KnownStream) {
   }
 
   try {
+    // mfsm is a different shape entirely: mint event -> which ika_chan NFT
+    // it touched -> that NFT's current level/rarity. Handle it separately
+    // so the enriched sample actually shows the full mint+reveal picture,
+    // not just the raw mint event.
+    if (stream === 'mfsm_events') {
+      const page = await fetchMfSquidMaidenMintEventsGraphQL(null, cp.last_checkpoint_number);
+      const sample = page.data.slice(0, 5);
+
+      let enriched: any[] = sample;
+      if (sample.length > 0) {
+        const digests = sample.map((r: any) => r.txDigest);
+        const ikaChanMap = await fetchTransactionEventsInBatchGraphQL(digests);
+
+        const ikaChanIds = Object.values(ikaChanMap);
+        const nftDataMap = await fetchIkaChanNftObjectsGraphQL(ikaChanIds);
+
+        enriched = sample.map((r: any) => {
+          const ikaChanNftId = ikaChanMap[r.txDigest] ?? null;
+          const nftData = ikaChanNftId ? nftDataMap[ikaChanNftId] : undefined;
+          return {
+            ...r,
+            ika_chan_nft_id: ikaChanNftId,
+            level: nftData?.level ?? null,
+            rarity: nftData?.rarity ?? null,
+            computed_drizzlets_earned: nftData ? calcNftDrizzlets(nftData.rarity, nftData.level) : null,
+          };
+        });
+
+        const rows = enriched.map((row: any) => ({ stream, tx_digest: row.txDigest, payload: row }));
+        await db.from('graphql_test_results').insert(rows);
+      }
+
+      return {
+        stream,
+        bootstrap_checkpoint_used: cp.last_checkpoint_number,
+        last_known_digest_from_json_rpc_era: cp.last_tx_digest,
+        count_returned: page.data.length,
+        has_next_page: page.hasNextPage,
+        next_cursor: page.nextCursor,
+        sample_rows: enriched,
+      };
+    }
+
     const page = stream === 'lock_events'
       ? await fetchLockStakeEventsGraphQL(null, cp.last_checkpoint_number)
       : stream === 'unlock_events'
