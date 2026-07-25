@@ -62,6 +62,7 @@ async function graphqlCall<T>(query: string): Promise<T> {
 interface RawEventNode {
   transaction: { digest: string };
   timestamp: string;
+  sender: { address: string } | null;
   contents: { json: any };
 }
 interface RawEventsResponse {
@@ -100,6 +101,7 @@ async function fetchEventStreamPage(
         nodes {
           transaction { digest }
           timestamp
+          sender { address }
           contents { json }
         }
       }
@@ -288,6 +290,136 @@ export async function fetchDurationsForBatchGraphQL(
     console.error('[fetchDurationsForBatchGraphQL]', err);
     // Digests left out of the map fall back to duration 0 in route.ts,
     // same behavior as the JSON-RPC version on a failed lookup.
+  }
+
+  return map;
+}
+
+// ─── MF Squid Maiden Mints ──────────────────────────────────────────────────
+
+const MFSM_EVENT_TYPE =
+  '0x3533437eabe66f05207aec78857efad86f42c2be84e2bbd63692c7c37fd349fb::mf_squid_maiden::MfSquidMaidenMinted';
+
+// Confirmed via the playground: unlike lock/unlock, this event's contents
+// are NOT wrapped in pos0 — it's a flat { id: "0x..." }. The wallet also
+// isn't in the event payload at all here, so it comes from the
+// transaction's sender instead.
+export async function fetchMfSquidMaidenMintEventsGraphQL(
+  cursor: EventCursor | null,
+  bootstrapCheckpoint: number,
+): Promise<EventPage<{ txDigest: string; timestampMs: string; wallet: string; nft_id: string }>> {
+  try {
+    const { nodes, nextCursor, hasNextPage } =
+      await fetchEventStreamPage(MFSM_EVENT_TYPE, cursor, bootstrapCheckpoint);
+
+    const data = nodes.map(n => ({
+      txDigest:    n.transaction.digest,
+      timestampMs: tsFromIso(n.timestamp),
+      wallet:      n.sender?.address ?? '',
+      nft_id:      n.contents.json.id,
+    }));
+
+    return { data, nextCursor, hasNextPage };
+  } catch (err) {
+    console.error('[fetchMfSquidMaidenMintEventsGraphQL]', err);
+    return { data: [], nextCursor: cursor, hasNextPage: false };
+  }
+}
+
+// ─── ika_chan_nft_id lookup (NFTUpdated event within the mint transaction) ──
+// Confirmed via the playground: the real package for this module is
+// 0x1627e933e2546d324ef1095151782770fb9ea959f9eb01184b8802553b937999 — a
+// distinct package from both the tasks package and the ika_chan_nft type's
+// own package. Each mint transaction carries a handful of events (we saw 4
+// in testing), so first: 20 per transaction is generous headroom, not a
+// tight limit — if a future transaction shape has more, raise this rather
+// than assume it's always small.
+interface RawTxEventsResponse {
+  [alias: string]: {
+    effects?: {
+      events?: { nodes: Array<{ contents: { type: { repr: string }; json: any } }> };
+    };
+  };
+}
+
+export async function fetchTransactionEventsInBatchGraphQL(
+  txDigests: string[]
+): Promise<Record<string, string>> {
+  if (txDigests.length === 0) return {};
+  const map: Record<string, string> = {};
+  const aliasFor = (i: number) => `tx${i}`;
+
+  const query = `
+    query {
+      ${txDigests.map((d, i) => `
+        ${aliasFor(i)}: transaction(digest: "${d}") {
+          effects {
+            events(first: 20) {
+              nodes { contents { type { repr } json } }
+            }
+          }
+        }
+      `).join('\n')}
+    }
+  `;
+
+  try {
+    const data = await graphqlCall<RawTxEventsResponse>(query);
+    txDigests.forEach((digest, i) => {
+      const eventNodes = data[aliasFor(i)]?.effects?.events?.nodes ?? [];
+      const nftUpdated = eventNodes.find(e => e.contents.type.repr.includes('::ika_chan_updater::NFTUpdated'));
+      if (nftUpdated?.contents.json?.id) {
+        map[digest] = nftUpdated.contents.json.id;
+      }
+    });
+  } catch (err) {
+    console.error('[fetchTransactionEventsInBatchGraphQL]', err);
+    // Digests left out of the map simply get no ika_chan_nft_id this run,
+    // same fallback behavior as the JSON-RPC version.
+  }
+
+  return map;
+}
+
+// ─── ika_chan NFT object read (level + rarity for the drizzlet formula) ────
+// Confirmed via the playground: contents.json.metadata.{level,rarity} is a
+// direct, flat match for what fetchIkaChanNftObjects already reads via
+// content.fields.metadata.fields.{level,rarity} on JSON-RPC — same field
+// names, one less layer of nesting, no renaming needed.
+
+interface RawObjectsResponse {
+  [alias: string]: {
+    asMoveObject?: { contents?: { json?: { metadata?: { level?: number; rarity?: string } } } };
+  };
+}
+
+export async function fetchIkaChanNftObjectsGraphQL(
+  objectIds: string[]
+): Promise<Record<string, { level: number; rarity: string }>> {
+  if (objectIds.length === 0) return {};
+  const map: Record<string, { level: number; rarity: string }> = {};
+  const aliasFor = (i: number) => `obj${i}`;
+
+  const query = `
+    query {
+      ${objectIds.map((id, i) => `
+        ${aliasFor(i)}: object(address: "${id}") {
+          asMoveObject { contents { json } }
+        }
+      `).join('\n')}
+    }
+  `;
+
+  try {
+    const data = await graphqlCall<RawObjectsResponse>(query);
+    objectIds.forEach((id, i) => {
+      const metadata = data[aliasFor(i)]?.asMoveObject?.contents?.json?.metadata;
+      if (metadata?.level !== undefined && metadata?.rarity) {
+        map[id] = { level: Number(metadata.level), rarity: String(metadata.rarity) };
+      }
+    });
+  } catch (err) {
+    console.error('[fetchIkaChanNftObjectsGraphQL]', err);
   }
 
   return map;
