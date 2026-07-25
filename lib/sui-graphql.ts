@@ -614,3 +614,164 @@ export async function fetchAirdropClaimsGraphQL(
     return { data: [], nextCursor: cursor, hasNextPage: false };
   }
 }
+// ─── Riddle Pool (stateless object read — no checkpoint, always current state) ─
+// Confirmed via the playground: contents.json.{riddle_one_pool,two,three}_pool
+// are flat, raw numbers directly on the Tasks shared object — no 1e9 division,
+// same as the JSON-RPC version.
+
+const RIDDLE_POOL_OBJECT =
+  process.env.RIDDLE_POOL_OBJECT_ID ||
+  '0x92c105c5cf5713a751ee18e7a007fbb238ae242b7234cf1ee25be51974eef334';
+
+export interface RiddlePoolFields {
+  pool1: number;
+  pool2: number;
+  pool3: number;
+}
+
+export async function fetchRiddlePoolGraphQL(): Promise<RiddlePoolFields | null> {
+  try {
+    const query = `
+      query {
+        object(address: "${RIDDLE_POOL_OBJECT}") {
+          asMoveObject { contents { json } }
+        }
+      }
+    `;
+    const data = await graphqlCall<{ object: { asMoveObject?: { contents?: { json?: any } } } }>(query);
+    const fields = data.object?.asMoveObject?.contents?.json;
+    if (!fields) return null;
+    return {
+      pool1: Number(fields.riddle_one_pool   ?? 0),
+      pool2: Number(fields.riddle_two_pool   ?? 0),
+      pool3: Number(fields.riddle_three_pool ?? 0),
+    };
+  } catch (err) {
+    console.error('[fetchRiddlePoolGraphQL]', err);
+    return null;
+  }
+}
+
+// ─── UserTasks lookup + object read (stateless — no checkpoint) ──────────────
+// fetchUserTasksObjectIdsGraphQL mirrors the airdrop SBT / mfsm ika_chan
+// lookups exactly: given transactions you already have digests for (from
+// riddle_submissions), find the UserTasks object each one touched via
+// objectChanges. No `first:` argument on objectChanges here — deliberately
+// matching the exact shape already proven in the airdrop SBT test rather
+// than introducing an untested variant.
+
+export interface UserTasksData {
+  objectId:           string;
+  riddleOneSolved:    boolean;
+  riddleTwoSolved:    boolean;
+  riddleThreeSolved:  boolean;
+  chainDrizzlets:     number;
+  communityCode:      string | null;
+}
+
+interface RawObjectChangesResponse {
+  [alias: string]: {
+    effects?: {
+      objectChanges?: {
+        nodes: Array<{
+          address: string;
+          outputState: { asMoveObject?: { contents?: { type?: { repr: string } } } } | null;
+        }>;
+      };
+    };
+  };
+}
+
+export async function fetchUserTasksObjectIdsGraphQL(
+  txDigests: string[]
+): Promise<Record<string, string>> {
+  if (txDigests.length === 0) return {};
+  const map: Record<string, string> = {};
+  const aliasFor = (i: number) => `tx${i}`;
+
+  const query = `
+    query {
+      ${txDigests.map((d, i) => `
+        ${aliasFor(i)}: transaction(digest: "${d}") {
+          effects {
+            objectChanges {
+              nodes { address outputState { asMoveObject { contents { type { repr } } } } }
+            }
+          }
+        }
+      `).join('\n')}
+    }
+  `;
+
+  try {
+    const data = await graphqlCall<RawObjectChangesResponse>(query);
+    txDigests.forEach((digest, i) => {
+      const changeNodes = data[aliasFor(i)]?.effects?.objectChanges?.nodes ?? [];
+      const found = changeNodes.find(c =>
+        c.outputState?.asMoveObject?.contents?.type?.repr.includes('::tasks::UserTasks')
+      );
+      if (found?.address) map[digest] = found.address;
+    });
+  } catch (err) {
+    console.error('[fetchUserTasksObjectIdsGraphQL]', err);
+  }
+
+  return map;
+}
+
+interface RawUserTasksObjectsResponse {
+  [alias: string]: {
+    asMoveObject?: {
+      contents?: {
+        json?: {
+          riddle_one_answered?:   boolean;
+          riddle_two_answered?:   boolean;
+          riddle_three_answered?: boolean;
+          drizzlets_earned?:      string;
+          used_community_participation_code?: string;
+        };
+      };
+    };
+  };
+}
+
+export async function fetchUserTasksObjectsGraphQL(
+  objectIds: string[]
+): Promise<Record<string, UserTasksData>> {
+  if (objectIds.length === 0) return {};
+  const map: Record<string, UserTasksData> = {};
+  const aliasFor = (i: number) => `obj${i}`;
+
+  const query = `
+    query {
+      ${objectIds.map((id, i) => `
+        ${aliasFor(i)}: object(address: "${id}") {
+          asMoveObject { contents { json } }
+        }
+      `).join('\n')}
+    }
+  `;
+
+  try {
+    const data = await graphqlCall<RawUserTasksObjectsResponse>(query);
+    objectIds.forEach((id, i) => {
+      const fields = data[aliasFor(i)]?.asMoveObject?.contents?.json;
+      if (!fields) return;
+      // GraphQL already gives us a decoded string here — unlike JSON-RPC,
+      // which returns a raw byte array needing String.fromCharCode(...).
+      const code = fields.used_community_participation_code;
+      map[id] = {
+        objectId:          id,
+        riddleOneSolved:   fields.riddle_one_answered   ?? false,
+        riddleTwoSolved:   fields.riddle_two_answered   ?? false,
+        riddleThreeSolved: fields.riddle_three_answered ?? false,
+        chainDrizzlets:    Number(fields.drizzlets_earned ?? 0),
+        communityCode:     code && code.length > 0 ? code : null,
+      };
+    });
+  } catch (err) {
+    console.error('[fetchUserTasksObjectsGraphQL]', err);
+  }
+
+  return map;
+}
