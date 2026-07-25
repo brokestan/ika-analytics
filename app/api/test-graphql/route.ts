@@ -39,20 +39,7 @@ function isAuthorized(req: NextRequest): boolean {
 const KNOWN_STREAMS = ['lock_events', 'unlock_events', 'isui_lock_events', 'isui_unlock_events'] as const;
 type KnownStream = typeof KNOWN_STREAMS[number];
 
-export async function GET(req: NextRequest) {
-  if (!isAuthorized(req)) {
-    return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
-  }
-
-  const stream = req.nextUrl.searchParams.get('stream') as KnownStream | null;
-  if (!stream || !KNOWN_STREAMS.includes(stream)) {
-    return NextResponse.json(
-      { error: `stream must be one of: ${KNOWN_STREAMS.join(', ')}` },
-      { status: 400 }
-    );
-  }
-
-  const db = getDB();
+async function runStream(db: ReturnType<typeof getDB>, stream: KnownStream) {
   const { data: cp, error: cpErr } = await db
     .from('indexer_checkpoints')
     .select('last_checkpoint_number, last_tx_digest')
@@ -60,10 +47,7 @@ export async function GET(req: NextRequest) {
     .single();
 
   if (cpErr || !cp?.last_checkpoint_number) {
-    return NextResponse.json(
-      { error: 'no last_checkpoint_number saved for this stream yet — run the checkpoint-number backfill first' },
-      { status: 400 }
-    );
+    return { stream, error: 'no last_checkpoint_number saved for this stream yet' };
   }
 
   try {
@@ -75,35 +59,22 @@ export async function GET(req: NextRequest) {
       ? await fetchISUILockEventsGraphQL(null, cp.last_checkpoint_number)
       : await fetchISUIUnlockEventsGraphQL(null, cp.last_checkpoint_number);
 
-    // For lock-type streams, also test the duration enrichment on a small
-    // sample (not the whole page) so this stays a quick, cheap dry run.
+    // Only IKA locks ever get a duration lookup in production — iSUI locks
+    // are always hardcoded to 0, so testing duration for them would just be
+    // noise, not a real check.
     let durationsSample: Record<string, number> | null = null;
-    if ((stream === 'lock_events' || stream === 'isui_lock_events') && page.data.length > 0) {
+    if (stream === 'lock_events' && page.data.length > 0) {
       const sampleDigests = page.data.slice(0, 5).map((d: any) => d.txDigest);
       durationsSample = await fetchDurationsForBatchGraphQL(sampleDigests);
     }
 
-    // Write the sample into the staging table — ONLY the staging table,
-    // never any real production table — so you can compare it against
-    // what's already stored using plain SQL, not just eyeballing JSON.
     const sample = page.data.slice(0, 5);
     if (sample.length > 0) {
-      const rows = sample.map((row: any) => ({
-        stream,
-        tx_digest: row.txDigest,
-        payload: row,
-      }));
-      const { error: insertErr } = await db.from('graphql_test_results').insert(rows);
-      if (insertErr) {
-        return NextResponse.json({
-          warning: 'Fetched fine, but failed to write to graphql_test_results — did you run the CREATE TABLE first?',
-          insert_error: insertErr.message,
-          sample_rows: sample,
-        });
-      }
+      const rows = sample.map((row: any) => ({ stream, tx_digest: row.txDigest, payload: row }));
+      await db.from('graphql_test_results').insert(rows);
     }
 
-    return NextResponse.json({
+    return {
       stream,
       bootstrap_checkpoint_used: cp.last_checkpoint_number,
       last_known_digest_from_json_rpc_era: cp.last_tx_digest,
@@ -112,9 +83,42 @@ export async function GET(req: NextRequest) {
       next_cursor: page.nextCursor,
       sample_rows: sample,
       duration_sample: durationsSample,
+    };
+  } catch (err) {
+    return { stream, error: (err as Error).message };
+  }
+}
+
+export async function GET(req: NextRequest) {
+  if (!isAuthorized(req)) {
+    return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+  }
+
+  const requested = req.nextUrl.searchParams.get('stream');
+  const db = getDB();
+
+  // No stream param, or stream=all -> run every known stream in one go.
+  if (!requested || requested === 'all') {
+    const results = [];
+    for (const s of KNOWN_STREAMS) {
+      results.push(await runStream(db, s));
+    }
+    return NextResponse.json({
+      results,
       note: 'Real production tables were never touched. Sample rows were written to graphql_test_results for SQL comparison — drop or truncate that table once you\'re done.',
     });
-  } catch (err) {
-    return NextResponse.json({ error: (err as Error).message }, { status: 500 });
   }
+
+  if (!KNOWN_STREAMS.includes(requested as KnownStream)) {
+    return NextResponse.json(
+      { error: `stream must be "all" or one of: ${KNOWN_STREAMS.join(', ')}` },
+      { status: 400 }
+    );
+  }
+
+  const result = await runStream(db, requested as KnownStream);
+  return NextResponse.json({
+    ...result,
+    note: 'Real production tables were never touched. Sample rows were written to graphql_test_results for SQL comparison — drop or truncate that table once you\'re done.',
+  });
 }
