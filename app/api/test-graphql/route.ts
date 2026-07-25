@@ -21,6 +21,8 @@ import {
   fetchMfSquidMaidenMintEventsGraphQL,
   fetchTransactionEventsInBatchGraphQL,
   fetchIkaChanNftObjectsGraphQL,
+  fetchRiddleSubmissionsGraphQL,
+  fetchAirdropClaimsGraphQL,
 } from '@/lib/sui-graphql';
 import { calcNftDrizzlets } from '@/lib/sui-rpc';
 
@@ -40,7 +42,10 @@ function isAuthorized(req: NextRequest): boolean {
   return auth === `Bearer ${secret}` || qs === secret;
 }
 
-const KNOWN_STREAMS = ['lock_events', 'unlock_events', 'isui_lock_events', 'isui_unlock_events', 'mfsm_events'] as const;
+const KNOWN_STREAMS = [
+  'lock_events', 'unlock_events', 'isui_lock_events', 'isui_unlock_events',
+  'mfsm_events', 'riddle_submission_txs', 'airdrop_claim_txs', 'airdrop_claim_sbt_txs',
+] as const;
 type KnownStream = typeof KNOWN_STREAMS[number];
 
 async function runStream(db: ReturnType<typeof getDB>, stream: KnownStream) {
@@ -55,6 +60,46 @@ async function runStream(db: ReturnType<typeof getDB>, stream: KnownStream) {
   }
 
   try {
+    // Riddle submissions and airdrop claims are transaction-filter streams,
+    // not event streams — handle them separately since they carry their
+    // own status check and don't paginate the same generic event helper.
+    if (stream === 'riddle_submission_txs') {
+      const page = await fetchRiddleSubmissionsGraphQL(null, cp.last_checkpoint_number);
+      const sample = page.data.slice(0, 5);
+      if (sample.length > 0) {
+        const rows = sample.map((row: any) => ({ stream, tx_digest: row.txDigest, payload: row }));
+        await db.from('graphql_test_results').insert(rows);
+      }
+      return {
+        stream,
+        bootstrap_checkpoint_used: cp.last_checkpoint_number,
+        last_known_digest_from_json_rpc_era: cp.last_tx_digest,
+        count_returned: page.data.length,
+        has_next_page: page.hasNextPage,
+        next_cursor: page.nextCursor,
+        sample_rows: sample,
+      };
+    }
+
+    if (stream === 'airdrop_claim_txs' || stream === 'airdrop_claim_sbt_txs') {
+      const claimType = stream === 'airdrop_claim_txs' ? 'claim' : 'claim_sbt';
+      const page = await fetchAirdropClaimsGraphQL(claimType, null, cp.last_checkpoint_number);
+      const sample = page.data.slice(0, 5);
+      if (sample.length > 0) {
+        const rows = sample.map((row: any) => ({ stream, tx_digest: row.tx_digest, payload: row }));
+        await db.from('graphql_test_results').insert(rows);
+      }
+      return {
+        stream,
+        bootstrap_checkpoint_used: cp.last_checkpoint_number,
+        last_known_digest_from_json_rpc_era: cp.last_tx_digest,
+        count_returned: page.data.length,
+        has_next_page: page.hasNextPage,
+        next_cursor: page.nextCursor,
+        sample_rows: sample,
+      };
+    }
+
     // mfsm is a different shape entirely: mint event -> which ika_chan NFT
     // it touched -> that NFT's current level/rarity. Handle it separately
     // so the enriched sample actually shows the full mint+reveal picture,
