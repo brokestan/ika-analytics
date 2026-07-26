@@ -7,7 +7,8 @@
  * repeatedly, safe to hit against production data, safe to leave deployed.
  *
  * GET /api/test-graphql?stream=lock_events&secret=YOUR_CRON_SECRET
- * GET /api/test-graphql?stream=unlock_events&secret=YOUR_CRON_SECRET
+ * GET /api/test-graphql?stream=riddle_pool&secret=YOUR_CRON_SECRET
+ * GET /api/test-graphql?stream=user_tasks&secret=YOUR_CRON_SECRET
  */
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -23,6 +24,9 @@ import {
   fetchIkaChanNftObjectsGraphQL,
   fetchRiddleSubmissionsGraphQL,
   fetchAirdropClaimsGraphQL,
+  fetchRiddlePoolGraphQL,
+  fetchUserTasksObjectIdsGraphQL,
+  fetchUserTasksObjectsGraphQL,
 } from '@/lib/sui-graphql';
 import { calcNftDrizzlets } from '@/lib/sui-rpc';
 
@@ -189,7 +193,36 @@ export async function GET(req: NextRequest) {
   const requested = req.nextUrl.searchParams.get('stream');
   const db = getDB();
 
-  // No stream param, or stream=all -> run every known stream in one go.
+  // Stateless reads — no checkpoint involved, always current on-chain state.
+  if (requested === 'riddle_pool') {
+    const pool = await fetchRiddlePoolGraphQL();
+    return NextResponse.json({
+      stream: 'riddle_pool',
+      result: pool,
+      note: 'Stateless object read — no checkpoint, nothing written to any table.',
+    });
+  }
+
+  if (requested === 'user_tasks') {
+    const { data: rows } = await db
+      .from('riddle_submissions')
+      .select('tx_digest')
+      .order('id', { ascending: false })
+      .limit(5);
+    const digests = (rows ?? []).map((r: any) => r.tx_digest);
+    const idMap = await fetchUserTasksObjectIdsGraphQL(digests);
+    const objectIds = Object.values(idMap);
+    const dataMap = await fetchUserTasksObjectsGraphQL(objectIds);
+    return NextResponse.json({
+      stream: 'user_tasks',
+      sample_tx_digests: digests,
+      tx_to_object_id: idMap,
+      object_data: dataMap,
+      note: 'Stateless object read — no checkpoint, nothing written to any table.',
+    });
+  }
+
+  // No stream param, or stream=all -> run every known checkpointed stream in one go.
   if (!requested || requested === 'all') {
     const results = [];
     for (const s of KNOWN_STREAMS) {
@@ -203,7 +236,7 @@ export async function GET(req: NextRequest) {
 
   if (!KNOWN_STREAMS.includes(requested as KnownStream)) {
     return NextResponse.json(
-      { error: `stream must be "all" or one of: ${KNOWN_STREAMS.join(', ')}` },
+      { error: `stream must be "all", "riddle_pool", "user_tasks", or one of: ${KNOWN_STREAMS.join(', ')}` },
       { status: 400 }
     );
   }
