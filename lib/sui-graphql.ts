@@ -759,14 +759,23 @@ export async function fetchUserTasksObjectsGraphQL(
       if (!fields) return;
       // GraphQL already gives us a decoded string here — unlike JSON-RPC,
       // which returns a raw byte array needing String.fromCharCode(...).
-      const code = fields.used_community_participation_code;
+      const rawCode = fields.used_community_participation_code;
+      let decodedCode: string | null = null;
+      if (rawCode && rawCode.length > 0) {
+        try {
+          decodedCode = Buffer.from(rawCode, 'base64').toString('utf-8');
+        } catch {
+          decodedCode = null;
+        }
+      }
+
       map[id] = {
         objectId:          id,
         riddleOneSolved:   fields.riddle_one_answered   ?? false,
         riddleTwoSolved:   fields.riddle_two_answered   ?? false,
         riddleThreeSolved: fields.riddle_three_answered ?? false,
         chainDrizzlets:    Number(fields.drizzlets_earned ?? 0),
-        communityCode:     code && code.length > 0 ? code : null,
+        communityCode:     decodedCode,
       };
     });
   } catch (err) {
