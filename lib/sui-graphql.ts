@@ -25,6 +25,7 @@ import type {
 import type { LockDuration } from './types';
 
 const GRAPHQL_URL = process.env.SUI_GRAPHQL_URL || 'https://graphql.mainnet.sui.io/graphql';
+const GRAPHQL_API_KEY = process.env.SUI_GRAPHQL_API_KEY || '';
 
 const PKG =
   process.env.IKA_PACKAGE_ID ||
@@ -62,9 +63,12 @@ const CHECKPOINT_SAFETY_BUFFER = 100;
 // ─── GraphQL transport ──────────────────────────────────────────────────────
 
 async function graphqlCall<T>(query: string): Promise<T> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (GRAPHQL_API_KEY) headers['x-api-key'] = GRAPHQL_API_KEY;
+
   const res = await fetch(GRAPHQL_URL, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify({ query }),
     cache: 'no-store' as RequestInit['cache'],
   });
