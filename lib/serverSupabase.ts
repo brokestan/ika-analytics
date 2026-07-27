@@ -249,10 +249,17 @@ export async function serverGetPrices(): Promise<Prices> {
 
 // ─── Indexer helpers (used by route.ts) ──────────────────────────────────────
 
+// UPDATED: now also returns last_checkpoint_number — the permanent
+// checkpoint-number floor captured during the GraphQL migration. This is
+// the one genuinely new piece of data route.ts needs that JSON-RPC never
+// required. last_tx_digest and last_event_seq are untouched — same
+// columns, same meaning as always (last_event_seq now happens to hold a
+// GraphQL opaque cursor instead of a JSON-RPC one, but nothing here needs
+// to know or care about that difference).
 export async function getCheckpoint(db: SupabaseClient, eventType: string) {
   const { data } = await db
     .from('indexer_checkpoints')
-    .select('last_tx_digest, last_event_seq')
+    .select('last_tx_digest, last_event_seq, last_checkpoint_number')
     .eq('event_type', eventType)
     .single();
   return data ?? null;
