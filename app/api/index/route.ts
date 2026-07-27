@@ -7,28 +7,34 @@ import {
   writeRefreshLog,
 } from '@/lib/serverSupabase';
 import {
-  fetchLockStakeEvents,
-  fetchUnlockEvents,
-  fetchISUILockEvents,
-  fetchISUIUnlockEvents,
-  fetchRiddlePool,
-  fetchRiddleSubmissions,
+  // V3 riddle submissions stays on JSON-RPC deliberately: that contract is
+  // paused, this stream will never advance again, and it's not worth
+  // porting a dead code path. Everything else below is pure calculation
+  // logic with no chain dependency at all — untouched by the migration.
   fetchV3RiddleSubmissions,
-  fetchAirdropClaims,
-  fetchDurationsForBatch,
   toHumanIka,
   toHumanISUI,
   getDrizzletRate,
   calcIkaDrizzlets,
   calcISUIDrizzlets,
   RIDDLE_DRIZZLETS_PER_SUBMISSION,
-  fetchMfSquidMaidenMintEvents,
-  fetchTransactionEventsInBatch,
-  fetchIkaChanNftObjects,
   calcNftDrizzlets,
-  fetchUserTasksObjectIds,
-  fetchUserTasksObjects,
 } from '@/lib/sui-rpc';
+import {
+  fetchLockStakeEventsGraphQL,
+  fetchUnlockEventsGraphQL,
+  fetchISUILockEventsGraphQL,
+  fetchISUIUnlockEventsGraphQL,
+  fetchRiddlePoolGraphQL,
+  fetchRiddleSubmissionsGraphQL,
+  fetchAirdropClaimsGraphQL,
+  fetchDurationsForBatchGraphQL,
+  fetchMfSquidMaidenMintEventsGraphQL,
+  fetchTransactionEventsInBatchGraphQL,
+  fetchIkaChanNftObjectsGraphQL,
+  fetchUserTasksObjectIdsGraphQL,
+  fetchUserTasksObjectsGraphQL,
+} from '@/lib/sui-graphql';
 import { buildLockDistribution, forecastDrizzlets } from '@/lib/calculations';
 import { LockDuration } from '@/lib/types';
 
@@ -120,24 +126,25 @@ async function resetRunningState(db: ReturnType<typeof getDB>) {
 
 // ---- RPC connectivity test --------------------------------------------------
 
-async function testRpcConnectivity(): Promise<{ ok: boolean; error?: string }> {
+// IMPORTANT FIX: this used to ping JSON-RPC directly (sui_getLatestCheckpointSequenceNumber).
+// Once every stream below is running on GraphQL, that old check would have
+// still failed the moment JSON-RPC access disappeared — bailing out the
+// entire cron with a 502 even though nothing it actually calls needs
+// JSON-RPC anymore. Checking GraphQL health here instead.
+async function testGraphqlConnectivity(): Promise<{ ok: boolean; error?: string }> {
   try {
-    const rpcUrl = process.env.SUI_RPC_URL || 'https://fullnode.mainnet.sui.io:443';
-    const res = await fetch(rpcUrl, {
+    const graphqlUrl = process.env.SUI_GRAPHQL_URL || 'https://graphql.mainnet.sui.io/graphql';
+    const res = await fetch(graphqlUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        jsonrpc: '2.0', id: 1,
-        method: 'sui_getLatestCheckpointSequenceNumber',
-        params: [],
-      }),
+      body: JSON.stringify({ query: '{ epoch { referenceGasPrice } }' }),
     });
-    if (!res.ok) return { ok: false, error: `HTTP ${res.status} from RPC` };
-    const json = await res.json() as { result?: unknown; error?: { message: string } };
-    if (json.error) return { ok: false, error: `RPC error: ${json.error.message}` };
+    if (!res.ok) return { ok: false, error: `HTTP ${res.status} from GraphQL` };
+    const json = await res.json() as { data?: unknown; errors?: Array<{ message: string }> };
+    if (json.errors?.length) return { ok: false, error: `GraphQL error: ${json.errors[0].message}` };
     return { ok: true };
   } catch (err) {
-    return { ok: false, error: `RPC unreachable: ${errMsg(err)}` };
+    return { ok: false, error: `GraphQL unreachable: ${errMsg(err)}` };
   }
 }
 
@@ -154,12 +161,12 @@ export async function GET(req: NextRequest) {
   const startMs = Date.now();
   const log: Record<string, unknown> = { mode, started_at: now };
 
-  const rpcCheck = await testRpcConnectivity();
-  if (!rpcCheck.ok) {
+  const graphqlCheck = await testGraphqlConnectivity();
+  if (!graphqlCheck.ok) {
     return NextResponse.json({
       success: false,
-      error: rpcCheck.error,
-      hint: 'RPC is unreachable from Vercel. Check SUI_RPC_URL env var.',
+      error: graphqlCheck.error,
+      hint: 'GraphQL endpoint is unreachable from Vercel. Check SUI_GRAPHQL_URL env var.',
     }, { status: 502 });
   }
   log.rpc_ok = true;
@@ -199,10 +206,38 @@ export async function GET(req: NextRequest) {
       console.log('[Indexer] Checkpoints cleared - full mode');
     }
 
+    // Fetch every stream's checkpoint-number floor once, up front, rather
+    // than one extra round-trip per stream. This is the one genuinely new
+    // piece of state the GraphQL fetchers need that JSON-RPC never did —
+    // see lib/serverSupabase.ts's getCheckpoint and lib/sui-graphql.ts's
+    // module comment for why it exists (a permanent floor, not a moving
+    // cursor — the moving part is still last_tx_digest/last_event_seq,
+    // untouched).
+    //
+    // CAUTION: mode=full above deletes the whole indexer_checkpoints row
+    // for each stream, including this floor. Don't run mode=full on any of
+    // these 8 streams anymore — if a full resync is ever genuinely needed,
+    // re-derive a fresh checkpoint number first (same one-time lookup used
+    // during the original migration) rather than clearing the row.
+    const CHECKPOINT_STREAMS = [
+      'lock_events', 'unlock_events', 'isui_lock_events', 'isui_unlock_events',
+      'mfsm_events', 'riddle_submission_txs', 'airdrop_claim_txs', 'airdrop_claim_sbt_txs',
+    ] as const;
+    const { data: cpRows } = await db
+      .from('indexer_checkpoints')
+      .select('event_type, last_checkpoint_number')
+      .in('event_type', CHECKPOINT_STREAMS as unknown as string[]);
+    const bootstrapCheckpoints: Record<string, number> = {};
+    for (const row of cpRows ?? []) {
+      if (row.last_checkpoint_number != null) {
+        bootstrapCheckpoints[row.event_type] = row.last_checkpoint_number;
+      }
+    }
+
     // -- 1. iSUI Locks --------------------------------------------------------
     const isuiLockResult = await processStream(
       db, now, startMs, 'isui_lock_events',
-      (cursor) => fetchISUILockEvents(cursor),
+      (cursor) => fetchISUILockEventsGraphQL(cursor, bootstrapCheckpoints.isui_lock_events),
       async (page, db, now) => {
         const uniqueEvents  = dedupEvents(page.data as any[]);
         const uniqueWallets = dedupByAddress(uniqueEvents);
@@ -249,7 +284,7 @@ export async function GET(req: NextRequest) {
     // -- 2. iSUI Unlocks ------------------------------------------------------
     const isuiUnlockResult = await processStream(
       db, now, startMs, 'isui_unlock_events',
-      (cursor) => fetchISUIUnlockEvents(cursor),
+      (cursor) => fetchISUIUnlockEventsGraphQL(cursor, bootstrapCheckpoints.isui_unlock_events),
       async (page, db, now) => {
         const events = dedupEvents(page.data as any[]);
 
@@ -294,7 +329,7 @@ export async function GET(req: NextRequest) {
     // -- 3. IKA Locks (already complete - skips instantly) --------------------
     const ikaLockResult = await processStream(
       db, now, startMs, 'lock_events',
-      (cursor) => fetchLockStakeEvents(cursor),
+      (cursor) => fetchLockStakeEventsGraphQL(cursor, bootstrapCheckpoints.lock_events),
       async (page, db, now) => {
         const uniqueEvents  = dedupEvents(page.data as any[]);
         const uniqueWallets = dedupByAddress(uniqueEvents);
@@ -314,7 +349,7 @@ export async function GET(req: NextRequest) {
         }
 
         const digests = uniqueEvents.map((e: any) => e.txDigest);
-        const durations = await fetchDurationsForBatch(digests);
+        const durations = await fetchDurationsForBatchGraphQL(digests);
 
         const rows = uniqueEvents.map((e: any) => ({
           wallet_address: e.account,
@@ -344,7 +379,7 @@ export async function GET(req: NextRequest) {
     // -- 4. IKA Unlocks (resumes from saved checkpoint) -----------------------
     const ikaUnlockResult = await processStream(
       db, now, startMs, 'unlock_events',
-      (cursor) => fetchUnlockEvents(cursor),
+      (cursor) => fetchUnlockEventsGraphQL(cursor, bootstrapCheckpoints.unlock_events),
       async (page, db, now) => {
         const events = dedupEvents(page.data as any[]);
 
@@ -389,18 +424,18 @@ export async function GET(req: NextRequest) {
     // -- 5. MF Squid Maiden Mints + NFT Reveals ------------------------------
     const mfsmResult = await processStream(
       db, now, startMs, 'mfsm_events',
-      (cursor) => fetchMfSquidMaidenMintEvents(cursor),
+      (cursor) => fetchMfSquidMaidenMintEventsGraphQL(cursor, bootstrapCheckpoints.mfsm_events),
       async (page, db, now) => {
         const events = dedupEvents(page.data as any[]);
         if (events.length === 0) return 0;
 
         // Step 1: fetch ika_chan_nft_id from each tx via NFTUpdated event
         const txDigests = events.map((e: any) => e.txDigest);
-        const ikaChanMap = await fetchTransactionEventsInBatch(txDigests);
+        const ikaChanMap = await fetchTransactionEventsInBatchGraphQL(txDigests);
 
         // Step 2: fetch NFT objects for level+rarity
         const ikaChanIds = [...new Set(Object.values(ikaChanMap))];
-        const nftDataMap = await fetchIkaChanNftObjects(ikaChanIds);
+        const nftDataMap = await fetchIkaChanNftObjectsGraphQL(ikaChanIds);
 
         // Step 3: save mf_squid_maiden_mints with ika_chan_nft_id
         const mintRows = events.map((e: any) => ({
@@ -472,7 +507,7 @@ export async function GET(req: NextRequest) {
     log.mfsm_mints = mfsmResult;
     // -- 6. Riddle Pool -------------------------------------------------------
     try {
-      const pool = await fetchRiddlePool();
+      const pool = await fetchRiddlePoolGraphQL();
       if (pool) {
         await Promise.all([
           db.from('riddle_pools').upsert(
@@ -499,7 +534,7 @@ export async function GET(req: NextRequest) {
     // -- 7. Riddle Submissions -------------------------------------------------
     const riddleSubResult = await processStream(
       db, now, startMs, 'riddle_submission_txs',
-      (cursor) => fetchRiddleSubmissions(cursor),
+      (cursor) => fetchRiddleSubmissionsGraphQL(cursor, bootstrapCheckpoints.riddle_submission_txs),
       async (page, db, now) => {
         const subs = dedupEvents(page.data as any[]);
 
@@ -687,7 +722,7 @@ export async function GET(req: NextRequest) {
         // -- 8. Airdrop Claims (daily trickle after backfill) ----------------------
 const airdropClaimResult = await processStream(
   db, now, startMs, 'airdrop_claim_txs',
-  (cursor) => fetchAirdropClaims('claim', cursor),
+  (cursor) => fetchAirdropClaimsGraphQL('claim', cursor, bootstrapCheckpoints.airdrop_claim_txs),
   async (page, db, now) => {
     const claims = page.data as any[];
     if (claims.length === 0) return 0;
@@ -713,7 +748,7 @@ log.airdrop_claims = airdropClaimResult;
 
 const airdropClaimSbtResult = await processStream(
   db, now, startMs, 'airdrop_claim_sbt_txs',
-  (cursor) => fetchAirdropClaims('claim_sbt', cursor),
+  (cursor) => fetchAirdropClaimsGraphQL('claim_sbt', cursor, bootstrapCheckpoints.airdrop_claim_sbt_txs),
   async (page, db, now) => {
     const claims = page.data as any[];
     if (claims.length === 0) return 0;
@@ -768,7 +803,7 @@ log.airdrop_claims_sbt = airdropClaimSbtResult;
         for (const b of chunk(wallets, 50)) {
           const bDigests = b.map((w: string) => txMap[w]);
           const discovered = await withRetry(
-            () => fetchUserTasksObjectIds(bDigests),
+            () => fetchUserTasksObjectIdsGraphQL(bDigests),
             'ut-discover'
           );
           for (const wallet of b) {
@@ -783,7 +818,7 @@ log.airdrop_claims_sbt = airdropClaimSbtResult;
         const userData: Record<string, import('@/lib/sui-rpc').UserTasksData> = {};
         for (const b of chunk(objectIds, 50)) {
           const fetched = await withRetry(
-            () => fetchUserTasksObjects(b),
+            () => fetchUserTasksObjectsGraphQL(b),
             'ut-fetch'
           );
           Object.assign(userData, fetched);
