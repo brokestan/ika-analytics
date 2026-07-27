@@ -72,7 +72,10 @@ async function graphqlCall<T>(query: string): Promise<T> {
     body: JSON.stringify({ query }),
     cache: 'no-store' as RequestInit['cache'],
   });
-  if (!res.ok) throw new Error(`GraphQL HTTP ${res.status}`);
+  if (!res.ok) {
+    const bodyText = await res.text().catch(() => '(could not read body)');
+    throw new Error(`GraphQL HTTP ${res.status}: ${bodyText}`);
+  }
   const json = await res.json() as { data?: T; errors?: Array<{ message: string }> };
   if (json.errors?.length) throw new Error(`GraphQL error: ${json.errors.map(e => e.message).join('; ')}`);
   if (json.data === undefined) throw new Error('GraphQL: no data returned');
