@@ -193,6 +193,17 @@ export async function GET(req: NextRequest) {
   const requested = req.nextUrl.searchParams.get('stream');
   const db = getDB();
 
+  if (requested === 'env_check') {
+    const url = process.env.SUI_GRAPHQL_URL || 'https://graphql.mainnet.sui.io/graphql';
+    const key = process.env.SUI_GRAPHQL_API_KEY || '';
+    return NextResponse.json({
+      graphql_url: url,
+      key_present: key.length > 0,
+      key_length: key.length,
+      key_has_whitespace: key !== key.trim(),
+    });
+  }
+
   // Stateless reads — no checkpoint involved, always current on-chain state.
   if (requested === 'riddle_pool') {
     const pool = await fetchRiddlePoolGraphQL();
