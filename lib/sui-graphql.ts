@@ -788,4 +788,45 @@ export async function fetchUserTasksObjectsGraphQL(
 
   return map;
 }
+// ─── Airdrop Pool (stateless object read — no checkpoint) ─────────────────
+// Confirmed via earlier testing: this exact object (0xf040974b...) already
+// showed up as a bonus result in the airdrop-claim objectChanges test, with
+// flat `balance` and `total_pool_amount` fields, same 1e9 division as the
+// JSON-RPC version — no renaming needed.
+
+const AIRDROP_POOL_OBJECT = '0xf040974b98d008efccf0cee6cbaf0a456a76536601248d99fb9625d7fc8185e7';
+
+export interface AirdropPoolData {
+  totalPool:  number;
+  balance:    number;
+  claimed:    number;
+  pctClaimed: number;
+}
+
+export async function fetchAirdropPoolDataGraphQL(): Promise<AirdropPoolData | null> {
+  try {
+    const query = `
+      query {
+        object(address: "${AIRDROP_POOL_OBJECT}") {
+          asMoveObject { contents { json } }
+        }
+      }
+    `;
+    const data = await graphqlCall<{ object: { asMoveObject?: { contents?: { json?: any } } } }>(query);
+    const fields = data.object?.asMoveObject?.contents?.json;
+    if (!fields) return null;
+    const totalPool = Number(fields.total_pool_amount) / 1e9;
+    const balance   = Number(fields.balance)           / 1e9;
+    const claimed   = totalPool - balance;
+    return {
+      totalPool,
+      balance,
+      claimed,
+      pctClaimed: totalPool > 0 ? (claimed / totalPool) * 100 : 0,
+    };
+  } catch (err) {
+    console.error('[fetchAirdropPoolDataGraphQL]', err);
+    return null;
+  }
+}
 
