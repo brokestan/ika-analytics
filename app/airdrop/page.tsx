@@ -1,5 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
-import { fetchAirdropPoolData } from '@/lib/sui-rpc';
+import { fetchAirdropPoolDataGraphQL as fetchAirdropPoolData } from '@/lib/sui-graphql';
 import { formatNumber } from '@/lib/calculations';
 import {
   Droplets, Users, ShieldCheck, ShieldOff,
