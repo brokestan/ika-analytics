@@ -287,10 +287,11 @@ export async function writeRefreshLog(
   status: string,
   log: Record<string, unknown>
 ) {
-  await db.from('refresh_logs').insert({
+  const { error } = await db.from('refresh_logs').insert({
     mode,
     status,
-    log,
-    created_at: new Date().toISOString(),
+    detail: log,
+    ran_at: new Date().toISOString(),
   });
+  if (error) console.error('[writeRefreshLog] insert failed:', error.message);
 }
