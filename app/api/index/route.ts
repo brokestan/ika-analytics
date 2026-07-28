@@ -134,9 +134,12 @@ async function resetRunningState(db: ReturnType<typeof getDB>) {
 async function testGraphqlConnectivity(): Promise<{ ok: boolean; error?: string }> {
   try {
     const graphqlUrl = process.env.SUI_GRAPHQL_URL || 'https://graphql.mainnet.sui.io/graphql';
+    const graphqlApiKey = process.env.SUI_GRAPHQL_API_KEY || '';
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (graphqlApiKey) headers['x-api-key'] = graphqlApiKey;
     const res = await fetch(graphqlUrl, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify({ query: '{ epoch { referenceGasPrice } }' }),
     });
     if (!res.ok) return { ok: false, error: `HTTP ${res.status} from GraphQL` };
