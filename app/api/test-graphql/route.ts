@@ -1,0 +1,260 @@
+/*
+ * app/api/test-graphql/route.ts
+ *
+ * Read-only dry run for the GraphQL migration. Calls the new GraphQL fetch
+ * functions and reports exactly what came back — never writes to Supabase,
+ * never touches indexer_checkpoints, never advances anything. Safe to hit
+ * repeatedly, safe to hit against production data, safe to leave deployed.
+ *
+ * GET /api/test-graphql?stream=lock_events&secret=YOUR_CRON_SECRET
+ * GET /api/test-graphql?stream=riddle_pool&secret=YOUR_CRON_SECRET
+ * GET /api/test-graphql?stream=user_tasks&secret=YOUR_CRON_SECRET
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import {
+  fetchLockStakeEventsGraphQL,
+  fetchUnlockEventsGraphQL,
+  fetchISUILockEventsGraphQL,
+  fetchISUIUnlockEventsGraphQL,
+  fetchDurationsForBatchGraphQL,
+  fetchMfSquidMaidenMintEventsGraphQL,
+  fetchTransactionEventsInBatchGraphQL,
+  fetchIkaChanNftObjectsGraphQL,
+  fetchRiddleSubmissionsGraphQL,
+  fetchAirdropClaimsGraphQL,
+  fetchRiddlePoolGraphQL,
+  fetchUserTasksObjectIdsGraphQL,
+  fetchUserTasksObjectsGraphQL,
+} from '@/lib/sui-graphql';
+import { calcNftDrizzlets } from '@/lib/sui-rpc';
+
+function getDB() {
+  return createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    { auth: { persistSession: false } }
+  );
+}
+
+function isAuthorized(req: NextRequest): boolean {
+  const secret = process.env.CRON_SECRET;
+  if (!secret) return true;
+  const auth = req.headers.get('authorization') || '';
+  const qs   = req.nextUrl.searchParams.get('secret') || '';
+  return auth === `Bearer ${secret}` || qs === secret;
+}
+
+const KNOWN_STREAMS = [
+  'lock_events', 'unlock_events', 'isui_lock_events', 'isui_unlock_events',
+  'mfsm_events', 'riddle_submission_txs', 'airdrop_claim_txs', 'airdrop_claim_sbt_txs',
+] as const;
+type KnownStream = typeof KNOWN_STREAMS[number];
+
+async function runStream(db: ReturnType<typeof getDB>, stream: KnownStream) {
+  const { data: cp, error: cpErr } = await db
+    .from('indexer_checkpoints')
+    .select('last_checkpoint_number, last_tx_digest')
+    .eq('event_type', stream)
+    .single();
+
+  if (cpErr || !cp?.last_checkpoint_number) {
+    return { stream, error: 'no last_checkpoint_number saved for this stream yet' };
+  }
+
+  try {
+    // Riddle submissions and airdrop claims are transaction-filter streams,
+    // not event streams — handle them separately since they carry their
+    // own status check and don't paginate the same generic event helper.
+    if (stream === 'riddle_submission_txs') {
+      const page = await fetchRiddleSubmissionsGraphQL(null, cp.last_checkpoint_number);
+      const sample = page.data.slice(0, 5);
+      if (sample.length > 0) {
+        const rows = sample.map((row: any) => ({ stream, tx_digest: row.txDigest, payload: row }));
+        await db.from('graphql_test_results').insert(rows);
+      }
+      return {
+        stream,
+        bootstrap_checkpoint_used: cp.last_checkpoint_number,
+        last_known_digest_from_json_rpc_era: cp.last_tx_digest,
+        count_returned: page.data.length,
+        has_next_page: page.hasNextPage,
+        next_cursor: page.nextCursor,
+        sample_rows: sample,
+      };
+    }
+
+    if (stream === 'airdrop_claim_txs' || stream === 'airdrop_claim_sbt_txs') {
+      const claimType = stream === 'airdrop_claim_txs' ? 'claim' : 'claim_sbt';
+      const page = await fetchAirdropClaimsGraphQL(claimType, null, cp.last_checkpoint_number);
+      const sample = page.data.slice(0, 5);
+      if (sample.length > 0) {
+        const rows = sample.map((row: any) => ({ stream, tx_digest: row.tx_digest, payload: row }));
+        await db.from('graphql_test_results').insert(rows);
+      }
+      return {
+        stream,
+        bootstrap_checkpoint_used: cp.last_checkpoint_number,
+        last_known_digest_from_json_rpc_era: cp.last_tx_digest,
+        count_returned: page.data.length,
+        has_next_page: page.hasNextPage,
+        next_cursor: page.nextCursor,
+        sample_rows: sample,
+      };
+    }
+
+    // mfsm is a different shape entirely: mint event -> which ika_chan NFT
+    // it touched -> that NFT's current level/rarity. Handle it separately
+    // so the enriched sample actually shows the full mint+reveal picture,
+    // not just the raw mint event.
+    if (stream === 'mfsm_events') {
+      const page = await fetchMfSquidMaidenMintEventsGraphQL(null, cp.last_checkpoint_number);
+      const sample = page.data.slice(0, 5);
+
+      let enriched: any[] = sample;
+      if (sample.length > 0) {
+        const digests = sample.map((r: any) => r.txDigest);
+        const ikaChanMap = await fetchTransactionEventsInBatchGraphQL(digests);
+
+        const ikaChanIds = Object.values(ikaChanMap);
+        const nftDataMap = await fetchIkaChanNftObjectsGraphQL(ikaChanIds);
+
+        enriched = sample.map((r: any) => {
+          const ikaChanNftId = ikaChanMap[r.txDigest] ?? null;
+          const nftData = ikaChanNftId ? nftDataMap[ikaChanNftId] : undefined;
+          return {
+            ...r,
+            ika_chan_nft_id: ikaChanNftId,
+            level: nftData?.level ?? null,
+            rarity: nftData?.rarity ?? null,
+            computed_drizzlets_earned: nftData ? calcNftDrizzlets(nftData.rarity, nftData.level) : null,
+          };
+        });
+
+        const rows = enriched.map((row: any) => ({ stream, tx_digest: row.txDigest, payload: row }));
+        await db.from('graphql_test_results').insert(rows);
+      }
+
+      return {
+        stream,
+        bootstrap_checkpoint_used: cp.last_checkpoint_number,
+        last_known_digest_from_json_rpc_era: cp.last_tx_digest,
+        count_returned: page.data.length,
+        has_next_page: page.hasNextPage,
+        next_cursor: page.nextCursor,
+        sample_rows: enriched,
+      };
+    }
+
+    const page = stream === 'lock_events'
+      ? await fetchLockStakeEventsGraphQL(null, cp.last_checkpoint_number)
+      : stream === 'unlock_events'
+      ? await fetchUnlockEventsGraphQL(null, cp.last_checkpoint_number)
+      : stream === 'isui_lock_events'
+      ? await fetchISUILockEventsGraphQL(null, cp.last_checkpoint_number)
+      : await fetchISUIUnlockEventsGraphQL(null, cp.last_checkpoint_number);
+
+    // Only IKA locks ever get a duration lookup in production — iSUI locks
+    // are always hardcoded to 0, so testing duration for them would just be
+    // noise, not a real check.
+    let durationsSample: Record<string, number> | null = null;
+    if (stream === 'lock_events' && page.data.length > 0) {
+      const sampleDigests = page.data.slice(0, 5).map((d: any) => d.txDigest);
+      durationsSample = await fetchDurationsForBatchGraphQL(sampleDigests);
+    }
+
+    const sample = page.data.slice(0, 5);
+    if (sample.length > 0) {
+      const rows = sample.map((row: any) => ({ stream, tx_digest: row.txDigest, payload: row }));
+      await db.from('graphql_test_results').insert(rows);
+    }
+
+    return {
+      stream,
+      bootstrap_checkpoint_used: cp.last_checkpoint_number,
+      last_known_digest_from_json_rpc_era: cp.last_tx_digest,
+      count_returned: page.data.length,
+      has_next_page: page.hasNextPage,
+      next_cursor: page.nextCursor,
+      sample_rows: sample,
+      duration_sample: durationsSample,
+    };
+  } catch (err) {
+    return { stream, error: (err as Error).message };
+  }
+}
+
+export async function GET(req: NextRequest) {
+  if (!isAuthorized(req)) {
+    return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+  }
+
+  const requested = req.nextUrl.searchParams.get('stream');
+  const db = getDB();
+
+  if (requested === 'env_check') {
+    const url = process.env.SUI_GRAPHQL_URL || 'https://graphql.mainnet.sui.io/graphql';
+    const key = process.env.SUI_GRAPHQL_API_KEY || '';
+    return NextResponse.json({
+      graphql_url: url,
+      key_present: key.length > 0,
+      key_length: key.length,
+      key_has_whitespace: key !== key.trim(),
+    });
+  }
+
+  // Stateless reads — no checkpoint involved, always current on-chain state.
+  if (requested === 'riddle_pool') {
+    const pool = await fetchRiddlePoolGraphQL();
+    return NextResponse.json({
+      stream: 'riddle_pool',
+      result: pool,
+      note: 'Stateless object read — no checkpoint, nothing written to any table.',
+    });
+  }
+
+  if (requested === 'user_tasks') {
+    const { data: rows } = await db
+      .from('riddle_submissions')
+      .select('tx_digest')
+      .order('id', { ascending: false })
+      .limit(5);
+    const digests = (rows ?? []).map((r: any) => r.tx_digest);
+    const idMap = await fetchUserTasksObjectIdsGraphQL(digests);
+    const objectIds = Object.values(idMap);
+    const dataMap = await fetchUserTasksObjectsGraphQL(objectIds);
+    return NextResponse.json({
+      stream: 'user_tasks',
+      sample_tx_digests: digests,
+      tx_to_object_id: idMap,
+      object_data: dataMap,
+      note: 'Stateless object read — no checkpoint, nothing written to any table.',
+    });
+  }
+
+  // No stream param, or stream=all -> run every known checkpointed stream in one go.
+  if (!requested || requested === 'all') {
+    const results = [];
+    for (const s of KNOWN_STREAMS) {
+      results.push(await runStream(db, s));
+    }
+    return NextResponse.json({
+      results,
+      note: 'Real production tables were never touched. Sample rows were written to graphql_test_results for SQL comparison — drop or truncate that table once you\'re done.',
+    });
+  }
+
+  if (!KNOWN_STREAMS.includes(requested as KnownStream)) {
+    return NextResponse.json(
+      { error: `stream must be "all", "riddle_pool", "user_tasks", or one of: ${KNOWN_STREAMS.join(', ')}` },
+      { status: 400 }
+    );
+  }
+
+  const result = await runStream(db, requested as KnownStream);
+  return NextResponse.json({
+    ...result,
+    note: 'Real production tables were never touched. Sample rows were written to graphql_test_results for SQL comparison — drop or truncate that table once you\'re done.',
+  });
+}
