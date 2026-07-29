@@ -66,8 +66,7 @@ async function graphqlCall<T>(query: string): Promise<T> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (GRAPHQL_API_KEY) headers['x-api-key'] = GRAPHQL_API_KEY;
 
-  console.log('[DEBUG] GRAPHQL_URL:', GRAPHQL_URL, '| key present:', !!GRAPHQL_API_KEY, '| key length:', GRAPHQL_API_KEY.length);
-  
+
   const res = await fetch(GRAPHQL_URL, {
     method: 'POST',
     headers,
