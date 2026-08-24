@@ -22,6 +22,7 @@ import {
   serverGetPrices,
 } from '@/lib/serverSupabase';
 import { formatNumber } from '@/lib/calculations';
+import { SEASON_1_END_MS } from '@/lib/sui-rpc';
 
 export const revalidate = 0;
 
@@ -54,6 +55,7 @@ export default async function DashboardPage() {
   const current   = m?.total_drizzlets_earned ?? 0;
   const day30     = m?.forecast_drizzlets_30d ?? 0;
   const day60     = m?.forecast_drizzlets_60d ?? 0;
+    const seasonEnded = Date.now() >= SEASON_1_END_MS;
   const dailyRate = (day30 - current) / 30;
   const day45     = Math.round(current + dailyRate * 45);
 
@@ -174,12 +176,12 @@ export default async function DashboardPage() {
           loading={loading}
           animationDelay={300}
         />
-        <MetricCard
-          title="Season Forecast (45d)"
+                <MetricCard
+          title={seasonEnded ? 'Season 1 Final Total' : 'Season Forecast (45d)'}
           value={day45}
           iconName="TrendingUp"
           iconColor="text-emerald-400"
-          subtitle="est. season end projection"
+          subtitle={seasonEnded ? 'drizzlets earned for season 1 of insack (ended)' : 'est. season end projection'}
           loading={loading}
           animationDelay={350}
         />
@@ -206,11 +208,12 @@ export default async function DashboardPage() {
       {/* ── Forecast + Top Earners ─────────────────────────────────────────── */}
       <SectionLabel>Forecast &amp; Leaderboard</SectionLabel>
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-5">
-        <ForecastCard
+               <ForecastCard
           current={current}
           day30={day30}
           day60={day60}
           seasonEnd={day45}
+          seasonEnded={seasonEnded}
           loading={loading}
         />
         <TopEarnersCard data={topEarners} loading={loading} />
