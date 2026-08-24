@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
-import { getDrizzletRate } from '@/lib/sui-rpc';
+import { getDrizzletRate, SEASON_1_END_MS } from '@/lib/sui-rpc';
 import { LockDuration } from '@/lib/types';
 
 export const revalidate = 60;
@@ -132,7 +132,7 @@ export async function GET(req: NextRequest) {
       .in('wallet_address', addresses);
 
     // ── 6. Compute per-wallet drizzlet breakdown ──────────────────────────────
-    const now = Date.now();
+        const now = Math.min(Date.now(), SEASON_1_END_MS);
 
     // Aggregate historical drizzlets by source
     type DrzMap = { unlock: number; isui_lock: number; riddle: number; nft_reveal: number; nft_count: number };
