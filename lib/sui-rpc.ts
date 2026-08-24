@@ -31,6 +31,7 @@ const AIRDROP_POOL_OBJECT = '0xf040974b98d008efccf0cee6cbaf0a456a76536601248d99f
 const BUFFER_PKG = '0xfeecbb29272d34b78c402b894ea63b48cff4a717dafc96df8aa205edca89610c';
 
 export const RIDDLE_DRIZZLETS_PER_SUBMISSION = 31;
+export const SEASON_1_END_MS = 1787578510921; // Aug 24, 2026 13:35:11 UTC — InkSack Season 1 ended
 
 // Event type strings — exact names confirmed from package tx list
 const EVENT_IKA_LOCK    = `${PKG}::event_wrapper::Event<${PKG}::tasks::StakedIkaLocked>`;

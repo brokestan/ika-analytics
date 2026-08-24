@@ -18,6 +18,7 @@ import {
   calcIkaDrizzlets,
   calcISUIDrizzlets,
   RIDDLE_DRIZZLETS_PER_SUBMISSION,
+  SEASON_1_END_MS,
   calcNftDrizzlets,
 } from '@/lib/sui-rpc';
 import {
@@ -1010,7 +1011,7 @@ while (true) {
   drzPage++;
 }
 
-  const ts = Date.now();
+    const ts = Math.min(Date.now(), SEASON_1_END_MS);
   let totalIka = 0, totalISUI = 0, totalActiveDrz = 0;
   let isuiDrz = 0, unlockedDrz = 0, riddleDrz = 0, nftDrz = 0;
 
@@ -1110,7 +1111,15 @@ while (true) {
       / totalIka
     : 3;
 
-  const forecast = forecastDrizzlets(totalDrizzlets, totalIka, totalISUI, weightedRate, 60);
+    const seasonEnded = Date.now() >= SEASON_1_END_MS;
+  const forecast = seasonEnded
+    ? {
+        current:    Math.round(totalDrizzlets),
+        day30:      Math.round(totalDrizzlets),
+        day60:      Math.round(totalDrizzlets),
+        season_end: Math.round(totalDrizzlets),
+      }
+    : forecastDrizzlets(totalDrizzlets, totalIka, totalISUI, weightedRate, 60);
 
   await db.from('dashboard_cache').upsert(
     {
