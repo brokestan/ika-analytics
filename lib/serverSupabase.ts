@@ -3,6 +3,7 @@
  * Uses service-role key for reads so RLS does not block anything.
  */
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import { SEASON_1_END_MS } from './sui-rpc';
 
 export function getAdminClient() {
   const url  = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -86,7 +87,7 @@ export async function serverGetDrizzletBreakdown(): Promise<DrizzletBreakdown> {
   const zero = { locked_ika: 0, unlocked_ika: 0, locked_isui: 0, unlocked_isui: 0, nft_reveals: 0, riddle: 0, riddle_sub: 0, riddle_pools: 0 };
   try {
     const db  = getAdminClient();
-    const now = Date.now();
+        const now = Math.min(Date.now(), SEASON_1_END_MS);
 
     // RPC for aggregates — bypasses PostgREST 1000-row cap
     const { data: agg } = await db.rpc('get_drizzlet_breakdown');
