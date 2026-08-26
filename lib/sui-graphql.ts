@@ -134,12 +134,15 @@ async function fetchEventStreamPage(
     }
   `;
 
-  const data = await graphqlCall<RawEventsResponse>(query);
+    const data = await graphqlCall<RawEventsResponse>(query);
   const nodes = data.events.nodes;
-  const nextCursor: EventCursor | null = data.events.pageInfo.hasNextPage
+  // endCursor is valid to resume from even when hasNextPage is false —
+  // it just means "nothing more right now," not "this cursor is invalid."
+  // Only skip saving it if endCursor is genuinely absent (first-ever empty page).
+  const nextCursor: EventCursor | null = data.events.pageInfo.endCursor
     ? {
         txDigest: nodes.length ? nodes[nodes.length - 1].transaction.digest : (cursor?.txDigest ?? ''),
-        eventSeq: data.events.pageInfo.endCursor ?? '',
+        eventSeq: data.events.pageInfo.endCursor,
       }
     : null;
 
@@ -526,12 +529,15 @@ async function fetchTxStreamPage(
     }
   `;
 
-  const data = await graphqlCall<RawTxsResponse>(query);
+    const data = await graphqlCall<RawTxsResponse>(query);
   const nodes = data.transactions.nodes;
-  const nextCursor: EventCursor | null = data.transactions.pageInfo.hasNextPage
+  // Same reasoning as fetchEventStreamPage — endCursor remains valid to
+  // resume from even on the terminal page; don't discard it just because
+  // hasNextPage flipped false.
+  const nextCursor: EventCursor | null = data.transactions.pageInfo.endCursor
     ? {
         txDigest: nodes.length ? nodes[nodes.length - 1].digest : (cursor?.txDigest ?? ''),
-        eventSeq: data.transactions.pageInfo.endCursor ?? '',
+        eventSeq: data.transactions.pageInfo.endCursor,
       }
     : null;
 
