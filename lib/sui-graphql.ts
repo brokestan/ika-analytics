@@ -291,11 +291,11 @@ export async function fetchDurationsForBatchGraphQL(
   const query = `
     query {
       ${txDigests.map((d, i) => `
-        ${aliasFor(i)}: transaction(digest: "${d}") {
+                ${aliasFor(i)}: transaction(digest: "${d}") {
           kind {
             __typename
             ... on ProgrammableTransaction {
-              inputs { nodes { __typename ... on MoveValue { json } } }
+              inputs(first: 20) { nodes { __typename ... on MoveValue { json } } }
             }
           }
         }
@@ -496,16 +496,16 @@ async function fetchTxStreamPage(
         nodes {
           digest
           sender { address }
-          effects {
+                    effects {
             status
             timestamp
-            balanceChanges { nodes { amount coinType { repr } } }
-            objectChanges { nodes { address outputState { asMoveObject { contents { type { repr } } } } } }
+            balanceChanges(first: 5) { nodes { amount coinType { repr } } }
+            objectChanges(first: 5) { nodes { address outputState { asMoveObject { contents { type { repr } } } } } }
           }
           kind {
             __typename
             ... on ProgrammableTransaction {
-              inputs { nodes { __typename ... on MoveValue { json } } }
+              inputs(first: 5) { nodes { __typename ... on MoveValue { json } } }
             }
           }
         }
@@ -700,9 +700,9 @@ export async function fetchUserTasksObjectIdsGraphQL(
   const query = `
     query {
       ${txDigests.map((d, i) => `
-        ${aliasFor(i)}: transaction(digest: "${d}") {
+                ${aliasFor(i)}: transaction(digest: "${d}") {
           effects {
-            objectChanges {
+            objectChanges(first: 20) {
               nodes { address outputState { asMoveObject { contents { type { repr } } } } }
             }
           }
