@@ -91,7 +91,7 @@ export default function RiddlePoolCard({ data, stats, loading }: Props) {
         </div>
         <div className="text-right">
           <p className="text-xs text-ika-dim">Total Prize</p>
-          <p className="font-mono font-bold text-amber-400 text-base">{formatNumber(data.total, 2)} IKA</p>
+          <p className="font-mono font-bold text-amber-400 text-base">{formatNumber(data.total, 2)} Drz</p>
         </div>
       </div>
 
@@ -106,7 +106,7 @@ export default function RiddlePoolCard({ data, stats, loading }: Props) {
             <p className="font-mono font-bold text-white text-base leading-none">
               {formatNumber(pool.value, 1)}
             </p>
-            <p className="text-xs text-ika-muted mt-0.5">IKA</p>
+            <p className="text-xs text-ika-muted mt-0.5">Drz</p>
           </div>
         ))}
       </div>
