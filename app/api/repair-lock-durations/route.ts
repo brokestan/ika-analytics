@@ -66,7 +66,7 @@ export async function GET(req: NextRequest) {
     const realDuration = realDurations[digest];
     // Only write back if chain genuinely reports a non-zero duration —
     // if it comes back 0 too, the original 0 was already correct (a real season lock).
-    if (realDuration && realDuration !== 0) {
+        if (realDuration) {
       const { error: updErr } = await db
         .from('locks')
         .update({ lock_duration: realDuration, updated_at: new Date().toISOString() })
