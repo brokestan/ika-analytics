@@ -150,6 +150,18 @@ function tsFromIso(iso: string): string {
   return String(new Date(iso).getTime());
 }
 
+// Multi-aliased batch queries have a much stricter node-cost ceiling than
+// single paginated connections. Chunk small and merge results rather than
+// ever sending more than a handful of aliases in one request.
+const BATCH_CHUNK_SIZE = 6;
+
+function chunkArray<T>(arr: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
+}
+
+
 // ─── IKA Lock Events ────────────────────────────────────────────────────────
 
 export async function fetchLockStakeEventsGraphQL(
@@ -283,38 +295,35 @@ export async function fetchDurationsForBatchGraphQL(
   const map: Record<string, LockDuration> = {};
   const aliasFor = (i: number) => `tx${i}`;
 
-  // One aliased root field per digest, batched into a single request —
-  // same intent as sui_multiGetTransactionBlocks doing them all at once.
-  // Confirmed working at small batch size (2-3 digests) via the playground.
-  // If a large batch ever gets rejected by the provider, chunk into smaller
-  // groups (e.g. 10 at a time) rather than one giant request.
-  const query = `
-    query {
-      ${txDigests.map((d, i) => `
-                ${aliasFor(i)}: transaction(digest: "${d}") {
-          kind {
-            __typename
-            ... on ProgrammableTransaction {
-              inputs(first: 20) { nodes { __typename ... on MoveValue { json } } }
+  for (const chunk of chunkArray(txDigests, BATCH_CHUNK_SIZE)) {
+    const query = `
+      query {
+        ${chunk.map((d, i) => `
+          ${aliasFor(i)}: transaction(digest: "${d}") {
+            kind {
+              __typename
+              ... on ProgrammableTransaction {
+                inputs(first: 5) { nodes { __typename ... on MoveValue { json } } }
+              }
             }
           }
-        }
-      `).join('\n')}
-    }
-  `;
+        `).join('\n')}
+      }
+    `;
 
-  try {
-    const data = await graphqlCall<RawTxKindResponse>(query);
-    txDigests.forEach((digest, i) => {
-      const inputNodes = data[aliasFor(i)]?.kind?.inputs?.nodes ?? [];
-      const match = inputNodes.find(n => n.json === '1' || n.json === '7' || n.json === '30');
-      const raw = match ? parseInt(match.json as string, 10) : 0;
-      map[digest] = (raw === 1 ? 1 : raw === 7 ? 7 : raw === 30 ? 30 : 0) as LockDuration;
-    });
-  } catch (err) {
-    console.error('[fetchDurationsForBatchGraphQL]', err);
-    // Digests left out of the map fall back to duration 0 in route.ts,
-    // same behavior as the JSON-RPC version on a failed lookup.
+    try {
+      const data = await graphqlCall<RawTxKindResponse>(query);
+      chunk.forEach((digest, i) => {
+        const inputNodes = data[aliasFor(i)]?.kind?.inputs?.nodes ?? [];
+        const match = inputNodes.find(n => n.json === '1' || n.json === '7' || n.json === '30');
+        const raw = match ? parseInt(match.json as string, 10) : 0;
+        map[digest] = (raw === 1 ? 1 : raw === 7 ? 7 : raw === 30 ? 30 : 0) as LockDuration;
+      });
+    } catch (err) {
+      console.error('[fetchDurationsForBatchGraphQL]', err);
+      // Digests left out of the map fall back to duration 0 in route.ts,
+      // same behavior as the JSON-RPC version on a failed lookup.
+    }
   }
 
   return map;
@@ -374,33 +383,35 @@ export async function fetchTransactionEventsInBatchGraphQL(
   const map: Record<string, string> = {};
   const aliasFor = (i: number) => `tx${i}`;
 
-  const query = `
-    query {
-      ${txDigests.map((d, i) => `
-        ${aliasFor(i)}: transaction(digest: "${d}") {
-          effects {
-            events(first: 20) {
-              nodes { contents { type { repr } json } }
+  for (const chunk of chunkArray(txDigests, BATCH_CHUNK_SIZE)) {
+    const query = `
+      query {
+        ${chunk.map((d, i) => `
+          ${aliasFor(i)}: transaction(digest: "${d}") {
+            effects {
+              events(first: 5) {
+                nodes { contents { type { repr } json } }
+              }
             }
           }
-        }
-      `).join('\n')}
-    }
-  `;
-
-  try {
-    const data = await graphqlCall<RawTxEventsResponse>(query);
-    txDigests.forEach((digest, i) => {
-      const eventNodes = data[aliasFor(i)]?.effects?.events?.nodes ?? [];
-      const nftUpdated = eventNodes.find(e => e.contents.type.repr.includes('::ika_chan_updater::NFTUpdated'));
-      if (nftUpdated?.contents.json?.id) {
-        map[digest] = nftUpdated.contents.json.id;
+        `).join('\n')}
       }
-    });
-  } catch (err) {
-    console.error('[fetchTransactionEventsInBatchGraphQL]', err);
-    // Digests left out of the map simply get no ika_chan_nft_id this run,
-    // same fallback behavior as the JSON-RPC version.
+    `;
+
+    try {
+      const data = await graphqlCall<RawTxEventsResponse>(query);
+      chunk.forEach((digest, i) => {
+        const eventNodes = data[aliasFor(i)]?.effects?.events?.nodes ?? [];
+        const nftUpdated = eventNodes.find(e => e.contents.type.repr.includes('::ika_chan_updater::NFTUpdated'));
+        if (nftUpdated?.contents.json?.id) {
+          map[digest] = nftUpdated.contents.json.id;
+        }
+      });
+    } catch (err) {
+      console.error('[fetchTransactionEventsInBatchGraphQL]', err);
+      // Digests left out of the map simply get no ika_chan_nft_id this run,
+      // same fallback behavior as the JSON-RPC version.
+    }
   }
 
   return map;
@@ -425,26 +436,28 @@ export async function fetchIkaChanNftObjectsGraphQL(
   const map: Record<string, { level: number; rarity: string }> = {};
   const aliasFor = (i: number) => `obj${i}`;
 
-  const query = `
-    query {
-      ${objectIds.map((id, i) => `
-        ${aliasFor(i)}: object(address: "${id}") {
-          asMoveObject { contents { json } }
-        }
-      `).join('\n')}
-    }
-  `;
-
-  try {
-    const data = await graphqlCall<RawObjectsResponse>(query);
-    objectIds.forEach((id, i) => {
-      const metadata = data[aliasFor(i)]?.asMoveObject?.contents?.json?.metadata;
-      if (metadata?.level !== undefined && metadata?.rarity) {
-        map[id] = { level: Number(metadata.level), rarity: String(metadata.rarity) };
+    for (const chunk of chunkArray(objectIds, BATCH_CHUNK_SIZE)) {
+    const query = `
+      query {
+        ${chunk.map((id, i) => `
+          ${aliasFor(i)}: object(address: "${id}") {
+            asMoveObject { contents { json } }
+          }
+        `).join('\n')}
       }
-    });
-  } catch (err) {
-    console.error('[fetchIkaChanNftObjectsGraphQL]', err);
+    `;
+
+    try {
+      const data = await graphqlCall<RawObjectsResponse>(query);
+      chunk.forEach((id, i) => {
+        const metadata = data[aliasFor(i)]?.asMoveObject?.contents?.json?.metadata;
+        if (metadata?.level !== undefined && metadata?.rarity) {
+          map[id] = { level: Number(metadata.level), rarity: String(metadata.rarity) };
+        }
+      });
+    } catch (err) {
+      console.error('[fetchIkaChanNftObjectsGraphQL]', err);
+    }
   }
 
   return map;
@@ -697,31 +710,33 @@ export async function fetchUserTasksObjectIdsGraphQL(
   const map: Record<string, string> = {};
   const aliasFor = (i: number) => `tx${i}`;
 
-  const query = `
-    query {
-      ${txDigests.map((d, i) => `
-                ${aliasFor(i)}: transaction(digest: "${d}") {
-          effects {
-            objectChanges(first: 20) {
-              nodes { address outputState { asMoveObject { contents { type { repr } } } } }
+  for (const chunk of chunkArray(txDigests, BATCH_CHUNK_SIZE)) {
+    const query = `
+      query {
+        ${chunk.map((d, i) => `
+          ${aliasFor(i)}: transaction(digest: "${d}") {
+            effects {
+              objectChanges(first: 10) {
+                nodes { address outputState { asMoveObject { contents { type { repr } } } } }
+              }
             }
           }
-        }
-      `).join('\n')}
-    }
-  `;
+        `).join('\n')}
+      }
+    `;
 
-  try {
-    const data = await graphqlCall<RawObjectChangesResponse>(query);
-    txDigests.forEach((digest, i) => {
-      const changeNodes = data[aliasFor(i)]?.effects?.objectChanges?.nodes ?? [];
-      const found = changeNodes.find(c =>
-        c.outputState?.asMoveObject?.contents?.type?.repr.includes('::tasks::UserTasks')
-      );
-      if (found?.address) map[digest] = found.address;
-    });
-  } catch (err) {
-    console.error('[fetchUserTasksObjectIdsGraphQL]', err);
+    try {
+      const data = await graphqlCall<RawObjectChangesResponse>(query);
+      chunk.forEach((digest, i) => {
+        const changeNodes = data[aliasFor(i)]?.effects?.objectChanges?.nodes ?? [];
+        const found = changeNodes.find(c =>
+          c.outputState?.asMoveObject?.contents?.type?.repr.includes('::tasks::UserTasks')
+        );
+        if (found?.address) map[digest] = found.address;
+      });
+    } catch (err) {
+      console.error('[fetchUserTasksObjectIdsGraphQL]', err);
+    }
   }
 
   return map;
@@ -750,20 +765,21 @@ export async function fetchUserTasksObjectsGraphQL(
   const map: Record<string, UserTasksData> = {};
   const aliasFor = (i: number) => `obj${i}`;
 
-  const query = `
-    query {
-      ${objectIds.map((id, i) => `
-        ${aliasFor(i)}: object(address: "${id}") {
-          asMoveObject { contents { json } }
-        }
-      `).join('\n')}
-    }
-  `;
+    for (const chunk of chunkArray(objectIds, BATCH_CHUNK_SIZE)) {
+    const query = `
+      query {
+        ${chunk.map((id, i) => `
+          ${aliasFor(i)}: object(address: "${id}") {
+            asMoveObject { contents { json } }
+          }
+        `).join('\n')}
+      }
+    `;
 
-  try {
-    const data = await graphqlCall<RawUserTasksObjectsResponse>(query);
-    objectIds.forEach((id, i) => {
-      const fields = data[aliasFor(i)]?.asMoveObject?.contents?.json;
+    try {
+      const data = await graphqlCall<RawUserTasksObjectsResponse>(query);
+      chunk.forEach((id, i) => {
+        const fields = data[aliasFor(i)]?.asMoveObject?.contents?.json;
       if (!fields) return;
       // GraphQL already gives us a decoded string here — unlike JSON-RPC,
       // which returns a raw byte array needing String.fromCharCode(...).
@@ -777,21 +793,23 @@ export async function fetchUserTasksObjectsGraphQL(
         }
       }
 
-      map[id] = {
-        objectId:          id,
-        riddleOneSolved:   fields.riddle_one_answered   ?? false,
-        riddleTwoSolved:   fields.riddle_two_answered   ?? false,
-        riddleThreeSolved: fields.riddle_three_answered ?? false,
-        chainDrizzlets:    Number(fields.drizzlets_earned ?? 0),
-        communityCode:     decodedCode,
-      };
-    });
-  } catch (err) {
-    console.error('[fetchUserTasksObjectsGraphQL]', err);
+              map[id] = {
+          objectId:          id,
+          riddleOneSolved:   fields.riddle_one_answered   ?? false,
+          riddleTwoSolved:   fields.riddle_two_answered   ?? false,
+          riddleThreeSolved: fields.riddle_three_answered ?? false,
+          chainDrizzlets:    Number(fields.drizzlets_earned ?? 0),
+          communityCode:     decodedCode,
+        };
+      });
+    } catch (err) {
+      console.error('[fetchUserTasksObjectsGraphQL]', err);
+    }
   }
 
   return map;
 }
+
 // ─── Airdrop Pool (stateless object read — no checkpoint) ─────────────────
 // Confirmed via earlier testing: this exact object (0xf040974b...) already
 // showed up as a bonus result in the airdrop-claim objectChanges test, with
